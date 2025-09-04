@@ -1,4 +1,4 @@
-\"use client\"
+"use client"
 import { useEffect, useRef, useState } from 'react'
 
 declare global {
@@ -22,19 +22,17 @@ export default function CameraAge() {
   const lastDetect = useRef<number>(0)
 
   useEffect(() => {
-    // List cameras (labels may need prior permission)
     navigator.mediaDevices?.getUserMedia({ video: true, audio: false })
       .then(() => navigator.mediaDevices.enumerateDevices())
       .then((devices) => setCameras(devices.filter(d => d.kind === 'videoinput')))
-      .catch(() => {/* ignore */})
+      .catch(() => {})
   }, [])
 
   async function startCam() {
     try {
       setStatus('Memuat model…')
-      // @ts-ignore
       const Human = window.Human?.Human
-      if (!Human) { setStatus('Human.js belum termuat. Tunggu sebentar lalu coba lagi.'); return; }
+      if (!Human) { setStatus('Human.js belum termuat. Coba lagi sebentar.'); return; }
       const human = new Human({
         modelBasePath: MODEL_BASE,
         cacheSensitivity: 0,
@@ -46,7 +44,7 @@ export default function CameraAge() {
           mesh: { enabled: false },
           iris: { enabled: false },
           attention: { enabled: false },
-          description: { enabled: true }, // age & gender need this
+          description: { enabled: true }, // umur & gender perlu ini
           emotion: { enabled: false },
           antispoof: { enabled: false },
           liveness: { enabled: false }
@@ -67,21 +65,15 @@ export default function CameraAge() {
       setRunning(true)
       lastDetect.current = performance.now()
 
-      // Resize canvas to video frame
       const canvas = canvasRef.current!
-      const handleResize = () => {
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-      }
+      const handleResize = () => { canvas.width = video.videoWidth; canvas.height = video.videoHeight }
       handleResize()
 
-      // Use rAF with throttle (15 FPS max detection)
       const loop = () => {
         if (!running) return
         requestAnimationFrame(loop)
         const now = performance.now()
-        const elapsed = now - lastDetect.current
-        if (elapsed < 66) return // ~15 fps
+        if (now - lastDetect.current < 66) return // ~15 fps
         lastDetect.current = now
         detect()
       }
@@ -100,7 +92,6 @@ export default function CameraAge() {
     const t0 = performance.now()
     try {
       const result = await human.detect(video)
-      // Draw video frame
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
       if (!result?.face?.length) {
@@ -135,42 +126,41 @@ export default function CameraAge() {
 
   function stopCam() {
     const video = videoRef.current
-    if (video?.srcObject) {
-      (video.srcObject as MediaStream).getTracks().forEach(t => t.stop())
-    }
+    if (video?.srcObject) (video.srcObject as MediaStream).getTracks().forEach(t => t.stop())
     setRunning(false)
     setStatus('Berhenti')
   }
 
   return (
-    <main className=\"container\">
-      <header className=\"header\">
-        <div className=\"dot\" /><h1 style={{margin:0,fontSize:18}}>Fabaro Age Estimation <span className=\"badge\">PWA</span></h1>
+    <main className="container">
+      <header className="header" style={{display:'flex',alignItems:'center',gap:12}}>
+        <img src="/logo/logo-horizontal.png" alt="Fabaro Age Estimation" height={40} />
+        <span className="badge">PWA</span>
       </header>
 
-      <div className=\"row\">
-        <button className=\"btn\" onClick={startCam} disabled={running}>Izinkan Kamera</button>
-        <button className=\"btn\" onClick={stopCam} disabled={!running}>Hentikan</button>
-        <select className=\"btn\" value={deviceId} onChange={(e)=>setDeviceId(e.currentTarget.value)}>
-          <option value=\"\">Pilih kamera…</option>
+      <div className="row">
+        <button className="btn" onClick={startCam} disabled={running}>Izinkan Kamera</button>
+        <button className="btn" onClick={stopCam} disabled={!running}>Hentikan</button>
+        <select className="btn" value={deviceId} onChange={(e)=>setDeviceId(e.currentTarget.value)}>
+          <option value="">Pilih kamera…</option>
           {cameras.map((c,i)=>(<option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i+1}`}</option>))}
         </select>
-        <span className=\"pill\">Status: {status}</span>
+        <span className="pill">Status: {status}</span>
       </div>
 
-      <div className=\"wrap\">
+      <div className="wrap">
         <video ref={videoRef} playsInline muted />
         <canvas ref={canvasRef} />
-        <div className=\"hud\">
+        <div className="hud">
           <div><b>Perkiraan Umur:</b> <span>{age}</span></div>
           <div><b>Confidence:</b> <span>{conf}</span></div>
-          <div className=\"pill\">FPS: {fps || '—'}</div>
+          <div className="pill">FPS: {fps || '—'}</div>
         </div>
       </div>
 
-      <p className=\"footer\">
-        100% on-device. Setelah pertama kali online, model disimpan offline oleh Service Worker biar lancar.
-        Gunakan secara etis dan minta persetujuan. © FABARO GROUP
+      <p className="footer">
+        100% on-device. Setelah pertama kali online, model disimpan offline oleh Service Worker.
+        Gunakan secara etis & minta persetujuan. © FABARO GROUP
       </p>
     </main>
   )
