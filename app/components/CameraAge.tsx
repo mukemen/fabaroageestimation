@@ -25,32 +25,105 @@ export default function CameraAge() {
 
   // ---------- helpers ----------
   async function ensureCamera() {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
-      streamRef.current = null
+    try {
+      // Hentikan stream sebelumnya jika ada
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop())
+        streamRef.current = null
+      }
+
+      // Cek apakah kita menggunakan HTTPS
+      if (typeof window !== 'undefined' && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        throw new Error("Akses kamera hanya tersedia melalui HTTPS (kecuali localhost)")
+      }
+
+      // Konfigurasi kamera yang lebih fleksibel
+      const constraints: MediaStreamConstraints = {
+        video: deviceId
+          ? { deviceId: { exact: deviceId } }
+          : { 
+              facingMode: { ideal: "user" },
+              width: { min: 640, ideal: 1280 },
+              height: { min: 480, ideal: 720 }
+            },
+        audio: false,
+      }
+
+      // Dapatkan stream kamera
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      streamRef.current = stream
+      
+      // Tampilkan di video element
+      const video = videoRef.current!
+      video.srcObject = stream
+      
+      // Tunggu metadata video
+      await new Promise<void>((resolve, reject) => {
+        const onLoaded = () => {
+          video.removeEventListener("loadedmetadata", onLoaded)
+          resolve()
+        }
+        const onError = (e: any) => {
+          video.removeEventListener("loadedmetadata", onLoaded)
+          video.removeEventListener("error", onError)
+          reject(new Error(`Gagal memuat metadata video: ${e.message}`))
+        }
+        
+        video.addEventListener("loadedmetadata", onLoaded)
+        video.addEventListener("error", onError)
+      })
+      
+      // Mainkan video
+      await video.play().catch(e => {
+        if (e.name === 'NotSupportedError') {
+          throw new Error("Format video tidak didukung oleh browser")
+        }
+        throw new Error(`Gagal memutar video: ${e.message}`)
+      })
+      
+      // Sesuaikan ukuran canvas
+      const canvas = canvasRef.current!
+      canvas.width = video.videoWidth || 1280
+      canvas.height = video.videoHeight || 720
+      
+      setStatus("Kamera aktif")
+      return true
+    } catch (err: any) {
+      console.error("Error kamera:", err)
+      
+      // Tangani error spesifik
+      if (err.name === 'NotAllowedError') {
+        setStatus("Izin kamera ditolak. Silakan izinkan akses kamera di pengaturan browser.")
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setStatus("Tidak ada kamera yang ditemukan pada perangkat ini.")
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setStatus("Kamera sedang digunakan oleh aplikasi lain.")
+      } else if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+        setStatus("Resolusi kamera tidak didukung. Mencoba konfigurasi alternatif...")
+        // Coba dengan konfigurasi minimal
+        const constraints: MediaStreamConstraints = {
+          video: { width: { min: 640 }, height: { min: 480 } },
+          audio: false
+        }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia(constraints)
+          streamRef.current = stream
+          const video = videoRef.current!
+          video.srcObject = stream
+          await video.play()
+          setStatus("Kamera aktif dengan resolusi dasar")
+        } catch (e) {
+          setStatus("Gagal mengakses kamera dengan konfigurasi dasar.")
+        }
+      } else if (err.message.includes("HTTPS")) {
+        setStatus("Akses kamera hanya tersedia melalui HTTPS (kecuali localhost). Silakan akses melalui https://")
+      } else {
+        setStatus(`Error kamera: ${err.message || 'Kesalahan tidak diketahui'}`)
+      }
+      
+      stopCam()
+      return false
     }
-    const constraints: MediaStreamConstraints = {
-      video: deviceId
-        ? { deviceId: { exact: deviceId } }
-        : { 
-            facingMode: { ideal: "user" },
-            width: { ideal: 1280 }, 
-            height: { ideal: 720 } 
-          },
-      audio: false,
-    }
-    const stream = await navigator.mediaDevices.getUserMedia(constraints)
-    streamRef.current = stream
-    const video = videoRef.current!
-    video.srcObject = stream
-    await new Promise<void>(res => {
-      const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
-      video.addEventListener("loadedmetadata", onMeta)
-    })
-    await video.play()
-    const canvas = canvasRef.current!
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
   }
 
   async function selfTestModels() {
@@ -79,12 +152,11 @@ export default function CameraAge() {
     }
   }
 
-  // Solusi kunci: Gunakan teknik dynamic import yang lebih aman
   async function loadHumanCPU() {
     try {
-      setStatus("Memuat model lokal (CPU)…")
+      setStatus("Memuat library deteksi wajah...")
       
-      // SOLUSI: Menghindari analisis statis Webpack dengan menggabungkan string
+      // Menghindari analisis statis Webpack dengan menggabungkan string
       const packageName = '@vl' + 'admandic/human';
       const mod: any = await import(/* webpackIgnore: true */ packageName);
       const Human = mod.default || mod.Human;
@@ -113,6 +185,8 @@ export default function CameraAge() {
 
       for (const det of DETECTOR_FILES) {
         try {
+          setStatus(`Memuat model detektor: ${det}`)
+          
           const human = new Human({
             ...baseCfg,
             face: {
@@ -147,7 +221,8 @@ export default function CameraAge() {
       throw new Error("Model lokal tidak lengkap / gagal dimuat")
     } catch (err) {
       console.error("Error kritis saat memuat Human.js:", err);
-      throw new Error("Gagal memuat library deteksi wajah. Pastikan package @vladmandic/human terinstal dengan benar.");
+      setStatus(`Gagal memuat model: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error("Gagal memuat library deteksi wajah. Pastikan model tersedia di /models.");
     }
   }
 
@@ -155,10 +230,19 @@ export default function CameraAge() {
   useEffect(() => {
     (async () => {
       try {
-        const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-        s.getTracks().forEach(t => t.stop())
+        // Cek HTTPS untuk non-localhost
+        if (typeof window !== 'undefined' && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+          setStatus("Peringatan: Akses kamera hanya tersedia melalui HTTPS (kecuali localhost). Silakan akses melalui https://");
+        }
+        
+        // Enumerasi kamera
         const devices = await navigator.mediaDevices.enumerateDevices()
-        setCameras(devices.filter(d => d.kind === "videoinput"))
+        const videoDevices = devices.filter(d => d.kind === "videoinput")
+        setCameras(videoDevices)
+        
+        if (videoDevices.length === 0) {
+          setStatus("Tidak ada kamera yang ditemukan pada perangkat ini.")
+        }
       } catch (err) {
         console.error("Gagal enumerasi kamera:", err)
         setStatus("Gagal mengakses kamera. Pastikan izin diizinkan.")
@@ -186,16 +270,25 @@ export default function CameraAge() {
 
   async function startCam() {
     try {
-      setStatus("Menyalakan kamera…")
-      await ensureCamera()
+      setStatus("Mengecek kamera...")
+      
+      // Pastikan kita menggunakan HTTPS (kecuali localhost)
+      if (typeof window !== 'undefined' && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        setStatus("Akses kamera hanya tersedia melalui HTTPS (kecuali localhost). Silakan akses melalui https://")
+        return
+      }
+      
+      const cameraReady = await ensureCamera()
+      if (!cameraReady) return
 
+      setStatus("Memeriksa model...")
       if (!(await selfTestModels())) {
         setStatus("Model TIDAK lengkap di /models (butuh: blazeface-front.json, faceres.json, gear.json)")
         stopCam()
         return
       }
 
-      setStatus("Kamera aktif — memuat model…")
+      setStatus("Memuat model AI...")
       const human = await loadHumanCPU()
       humanRef.current = human
 
@@ -213,8 +306,9 @@ export default function CameraAge() {
       rafRef.current = requestAnimationFrame(loop)
       setStatus("Siap. Arahkan wajah ke kamera.")
     } catch (err: any) {
+      console.error("Error startCam:", err)
       stopCam()
-      setStatus("Gagal: " + (err?.message || String(err)))
+      setStatus("Gagal memulai: " + (err?.message || String(err)))
     }
   }
 
@@ -223,7 +317,11 @@ export default function CameraAge() {
     const video = videoRef.current!
     const canvas = canvasRef.current!
     const ctx = canvas.getContext("2d")!
-    const t0 = performance.now()
+    
+    if (!ctx) {
+      setStatus("Gagal mendapatkan konteks canvas")
+      return
+    }
 
     try {
       const result = await human.detect(video)
@@ -234,7 +332,11 @@ export default function CameraAge() {
       } else {
         const f = result.face[0]
         const [bx, by, bw, bh] = f.box || [0,0,0,0]
-        if (bw>0 && bh>0) { ctx.strokeStyle = "#00d4aa"; ctx.lineWidth = 3; ctx.strokeRect(bx,by,bw,bh) }
+        if (bw>0 && bh>0) { 
+          ctx.strokeStyle = "#00d4aa"; 
+          ctx.lineWidth = 3; 
+          ctx.strokeRect(bx,by,bw,bh) 
+        }
 
         const a = (f.age != null) ? Math.round(f.age) : null
         const score = (f.faceScore ?? f.boxScore ?? f.score ?? 0) as number
@@ -252,20 +354,27 @@ export default function CameraAge() {
         }
       }
     } catch (e:any) {
+      console.error("Error deteksi:", e)
       setStatus("Error deteksi: " + (e?.message || String(e)))
     }
   }
 
   function stopCam() {
     runningRef.current = false
-    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
     const v = videoRef.current
-    if (v?.srcObject) (v.srcObject as MediaStream).getTracks().forEach(t => t.stop())
+    if (v?.srcObject) {
+      (v.srcObject as MediaStream).getTracks().forEach(t => t.stop())
+      v.srcObject = null
+    }
     if (streamRef.current) { 
       streamRef.current.getTracks().forEach(t => t.stop()) 
       streamRef.current = null 
     }
-    setStatus("Berhenti")
+    setStatus("Kamera dimatikan")
   }
 
   async function onChangeCamera(id: string) {
@@ -418,6 +527,22 @@ export default function CameraAge() {
         100% on-device. Setelah pertama kali online, model disimpan offline oleh Service Worker.
         Gunakan secara etis & minta persetujuan. © FABARO GROUP
       </p>
+      
+      <div style={{
+        marginTop: "20px",
+        padding: "15px",
+        background: "#fff8e6",
+        border: "1px solid #ffcc00",
+        borderRadius: "8px"
+      }}>
+        <h3 style={{ margin: "0 0 10px", color: "#d35400" }}>Panduan Penggunaan</h3>
+        <ul style={{ margin: "5px 0", paddingLeft: "20px" }}>
+          <li>Gunakan HTTPS untuk mengakses halaman ini (kecuali localhost)</li>
+          <li>Pastikan Anda telah memberikan izin akses kamera di browser</li>
+          <li>Jika kamera tidak berfungsi, coba refresh halaman dan izinkan kembali</li>
+          <li>Untuk perangkat iOS, pastikan Anda menggunakan Safari terbaru</li>
+        </ul>
+      </div>
     </main>
   )
 }
