@@ -11,28 +11,35 @@ const MODEL_BASE = `https://cdn.jsdelivr.net/npm/@vladmandic/human@${HUMAN_VERSI
 export default function CameraAge() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+
   const [status, setStatus] = useState('Idle')
   const [age, setAge] = useState<string>('—')
   const [conf, setConf] = useState<string>('—')
   const [fps, setFps] = useState<number>(0)
-  const [running, setRunning] = useState(false)
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined)
+
   const humanRef = useRef<any>(null)
   const lastDetect = useRef<number>(0)
+  const runningRef = useRef<boolean>(false) // <- hindari stale state
+  const rafRef = useRef<number | null>(null)
 
   useEffect(() => {
+    // Pre-list kamera (label butuh izin minimal sekali)
     navigator.mediaDevices?.getUserMedia({ video: true, audio: false })
       .then(() => navigator.mediaDevices.enumerateDevices())
       .then((devices) => setCameras(devices.filter(d => d.kind === 'videoinput')))
-      .catch(() => {})
+      .catch(() => {/* abaikan */})
+    return () => stopCam()
   }, [])
 
   async function startCam() {
     try {
       setStatus('Memuat model…')
       const Human = window.Human?.Human
-      if (!Human) { setStatus('Human.js belum termuat. Coba lagi sebentar.'); return; }
+      if (!Human) { setStatus('Human.js belum termuat. Coba lagi sebentar.'); return }
+
+      // ⚙️ Konfigurasi: aktifkan face.gear (Age/Gender/Emotion/Race)
       const human = new Human({
         modelBasePath: MODEL_BASE,
         cacheSensitivity: 0,
@@ -40,12 +47,18 @@ export default function CameraAge() {
         filter: { enabled: true, equalization: true },
         face: {
           enabled: true,
-          detector: { rotation: true, maxDetected: 1 },
+          detector: {
+            rotation: true,
+            maxDetected: 1,
+            minConfidence: 0.2,     // lebih toleran
+            skipFrames: 0,
+          },
           mesh: { enabled: false },
           iris: { enabled: false },
           attention: { enabled: false },
-          description: { enabled: true }, // umur & gender perlu ini
+          description: { enabled: false }, // tidak perlu untuk age
           emotion: { enabled: false },
+          gear: { enabled: true },        // <- WAJIB untuk age
           antispoof: { enabled: false },
           liveness: { enabled: false }
         }
@@ -54,33 +67,40 @@ export default function CameraAge() {
       await human.load()
       await human.warmup()
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const constraints: MediaStreamConstraints = {
         video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
-      })
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
       const video = videoRef.current!
       video.srcObject = stream
+      await new Promise<void>(res => {  // tunggu metadata biar dimensi valid
+        const onMeta = () => { res(); video.removeEventListener('loadedmetadata', onMeta) }
+        video.addEventListener('loadedmetadata', onMeta)
+      })
       await video.play()
+
+      // ukuran kanvas = frame video
+      const canvas = canvasRef.current!
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+
       setStatus('Kamera aktif')
-      setRunning(true)
+      runningRef.current = true
       lastDetect.current = performance.now()
 
-      const canvas = canvasRef.current!
-      const handleResize = () => { canvas.width = video.videoWidth; canvas.height = video.videoHeight }
-      handleResize()
-
       const loop = () => {
-        if (!running) return
-        requestAnimationFrame(loop)
+        if (!runningRef.current) return
+        rafRef.current = requestAnimationFrame(loop)
         const now = performance.now()
         if (now - lastDetect.current < 66) return // ~15 fps
         lastDetect.current = now
         detect()
       }
-      requestAnimationFrame(loop)
+      rafRef.current = requestAnimationFrame(loop)
 
     } catch (err: any) {
-      setStatus('Gagal: ' + err.message)
+      setStatus('Gagal: ' + (err?.message || err))
     }
   }
 
@@ -90,8 +110,10 @@ export default function CameraAge() {
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
     const t0 = performance.now()
+
     try {
       const result = await human.detect(video)
+      // gambar frame
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
       if (!result?.face?.length) {
@@ -99,11 +121,12 @@ export default function CameraAge() {
       } else {
         const f = result.face[0]
         const [bx, by, bw, bh] = f.box || [0,0,0,0]
-        if (bw>0 && bh>0) {
+        if (bw > 0 && bh > 0) {
           ctx.strokeStyle = '#00d4aa'
           ctx.lineWidth = 3
           ctx.strokeRect(bx, by, bw, bh)
         }
+        // age dari modul "gear"
         const a = (f.age != null) ? Math.round(f.age) : null
         const c = f.score ? (f.score * 100).toFixed(1) + '%' : '—'
         setAge(a ? `${a} tahun` : '—')
@@ -113,11 +136,11 @@ export default function CameraAge() {
           ctx.fillRect(bx, Math.max(0, by-26), 120, 24)
           ctx.fillStyle = '#fff'
           ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto, Arial'
-          ctx.fillText(`≈ ${a} th`, bx+8, Math.max(14, by-8))
+          ctx.fillText(`≈ ${a} th`, bx + 8, Math.max(14, by - 8))
         }
       }
     } catch (e:any) {
-      setStatus('Error deteksi: ' + e.message)
+      setStatus('Error deteksi: ' + (e?.message || e))
     } finally {
       const dt = performance.now() - t0
       setFps(Math.max(1, Math.round(1000 / dt)))
@@ -125,9 +148,10 @@ export default function CameraAge() {
   }
 
   function stopCam() {
+    runningRef.current = false
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
     const video = videoRef.current
     if (video?.srcObject) (video.srcObject as MediaStream).getTracks().forEach(t => t.stop())
-    setRunning(false)
     setStatus('Berhenti')
   }
 
@@ -139,8 +163,8 @@ export default function CameraAge() {
       </header>
 
       <div className="row">
-        <button className="btn" onClick={startCam} disabled={running}>Izinkan Kamera</button>
-        <button className="btn" onClick={stopCam} disabled={!running}>Hentikan</button>
+        <button className="btn" onClick={startCam}>Izinkan Kamera</button>
+        <button className="btn" onClick={stopCam}>Hentikan</button>
         <select className="btn" value={deviceId} onChange={(e)=>setDeviceId(e.currentTarget.value)}>
           <option value="">Pilih kamera…</option>
           {cameras.map((c,i)=>(<option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i+1}`}</option>))}
