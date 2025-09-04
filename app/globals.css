@@ -1,40 +1,124 @@
-import './globals.css'
-import type { Metadata } from 'next'
-
-export const metadata: Metadata = {
-  title: 'Fabaro Age Estimation (PWA)',
-  description: 'Perkiraan umur dari wajah, 100% on-device. Installable PWA.',
-  manifest: '/manifest.webmanifest',
-  themeColor: '#0B0B0C',
-  icons: {
-    icon: [
-      { url: '/icons/icon-32.png', sizes: '32x32', type: 'image/png' },
-      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-      { url: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' }
-    ],
-    apple: [{ url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' }]
-  }
+:root {
+  --bg: #0B0B0C;
+  --fg: #F3F3F4;
+  --accent: #00D4AA;
+  --muted: #9AA1A7;
+  --border: #1C1F24;
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="id">
-      <body>
-        {children}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+a { color: var(--accent); text-decoration: none; }
 
-        {/* Registrasi Service Worker untuk PWA & cache model lokal di /models */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if ('serviceWorker' in navigator) {
-                window.addEventListener('load', () => {
-                  navigator.serviceWorker.register('/sw.js').catch(console.error);
-                });
-              }
-            `
-          }}
-        />
-      </body>
-    </html>
-  )
+/* Layout & Header */
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+}
+.header {
+  padding: 18px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent);
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Controls */
+.btn, select {
+  background: #12161B;
+  color: var(--fg);
+  border: 1px solid #222933;
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.btn:hover, select:hover { border-color: #2B3441; }
+.pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #11151A;
+  border: 1px solid #1F2630;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Stage */
+.wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #0F1216;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+}
+video, canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* HUD */
+.hud {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  background: rgba(10, 12, 14, .6);
+  backdrop-filter: blur(6px);
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+/* Footer note */
+.footer {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 16px 20px;
+  line-height: 1.5;
+}
+
+/* Badges */
+.badge {
+  font-size: 10px;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+  color: #CDD3D8;
+  background: #11151A;
+  border: 1px solid #1F2630;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
+/* Small screens tweak */
+@media (max-width: 480px) {
+  .hud { font-size: 13px; left: 8px; bottom: 8px; }
+  .btn, select { padding: 9px 12px; }
 }
