@@ -388,15 +388,19 @@ export default function CameraAge() {
   return (
     <main className="container" style={{ 
       fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif',
-      maxWidth: "800px",
+      maxWidth: "100%",
       margin: "0 auto",
-      padding: "20px"
+      padding: "10px",
+      backgroundColor: "#1a1a1a",
+      color: "#e6e6e6"
     }}>
       <header className="header" style={{ 
         display: "flex", 
         alignItems: "center", 
         gap: "12px",
-        marginBottom: "20px"
+        borderBottom: "1px solid #2d2d2d",
+        paddingBottom: "8px",
+        marginBottom: "15px"
       }}>
         <img src="/logo/logo-horizontal.png" alt="Fabaro Age Estimation" height={40} />
         <span style={{ 
@@ -411,19 +415,20 @@ export default function CameraAge() {
 
       <div style={{ 
         display: "flex", 
-        gap: "10px", 
-        marginBottom: "20px",
-        flexWrap: "wrap"
+        flexWrap: "wrap",
+        gap: "10px",
+        marginBottom: "20px"
       }}>
         <button 
           style={{
             background: "#2563eb",
             color: "white",
             border: "none",
-            padding: "10px 20px",
-            borderRadius: "6px",
+            padding: "12px 24px",
+            borderRadius: "8px",
             cursor: "pointer",
-            fontWeight: "bold"
+            fontWeight: "bold",
+            flex: 1
           }}
           onClick={startCam}
         >Izinkan Kamera</button>
@@ -433,20 +438,24 @@ export default function CameraAge() {
             background: "#dc2626",
             color: "white",
             border: "none",
-            padding: "10px 20px",
-            borderRadius: "6px",
+            padding: "12px 24px",
+            borderRadius: "8px",
             cursor: "pointer",
-            fontWeight: "bold"
+            fontWeight: "bold",
+            flex: 1
           }}
           onClick={stopCam}
         >Hentikan</button>
         
         <select 
           style={{
-            padding: "10px 15px",
-            borderRadius: "6px",
-            border: "1px solid #e2e8f0",
-            background: "white"
+            padding: "12px 15px",
+            borderRadius: "8px",
+            border: "1px solid #4a4a4a",
+            background: "#2d2d2d",
+            color: "white",
+            flex: 1,
+            minWidth: "150px"
           }}
           value={deviceId}
           onChange={(e) => onChangeCamera(e.currentTarget.value)}
@@ -456,10 +465,11 @@ export default function CameraAge() {
         </select>
         
         <span style={{
-          background: "#f1f5f9",
+          background: "#4a4a4a",
           padding: "8px 12px",
           borderRadius: "999px",
-          fontSize: "14px"
+          fontSize: "14px",
+          color: "white"
         }}>Status: {status}</span>
       </div>
 
@@ -468,9 +478,10 @@ export default function CameraAge() {
         width: "100%",
         aspectRatio: "16 / 9",
         backgroundColor: "#000",
-        borderRadius: "8px",
+        borderRadius: "12px",
         overflow: "hidden",
-        marginBottom: "20px"
+        marginBottom: "20px",
+        boxShadow: "0 0 10px rgba(0,0,0,0.5)"
       }}>
         <video 
           ref={videoRef} 
@@ -500,7 +511,8 @@ export default function CameraAge() {
           color: "white",
           padding: "10px",
           borderRadius: "8px",
-          width: "calc(100% - 30px)"
+          width: "calc(100% - 30px)",
+          fontSize: "16px"
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
             <b>Perkiraan Umur:</b> <span>{age}</span>
@@ -510,32 +522,35 @@ export default function CameraAge() {
           </div>
           <div style={{
             background: "rgba(255,255,255,0.2)",
-            padding: "3px 8px",
+            padding: "5px 12px",
             borderRadius: "6px",
             display: "inline-block",
-            fontSize: "12px"
+            fontSize: "14px"
           }}>FPS: {fps || "—"}</div>
         </div>
       </div>
 
       <p style={{ 
-        color: "#64748b",
+        color: "#999",
         fontSize: "14px",
         fontStyle: "italic",
-        textAlign: "center"
+        textAlign: "center",
+        marginBottom: "15px"
       }}>
         100% on-device. Setelah pertama kali online, model disimpan offline oleh Service Worker.
         Gunakan secara etis & minta persetujuan. © FABARO GROUP
       </p>
       
       <div style={{
-        marginTop: "20px",
         padding: "15px",
-        background: "#fff8e6",
-        border: "1px solid #ffcc00",
-        borderRadius: "8px"
+        background: "#fff5c7",
+        border: "1px solid #facc15",
+        borderRadius: "12px",
+        fontSize: "14px",
+        color: "#4a4a4a",
+        marginBottom: "20px"
       }}>
-        <h3 style={{ margin: "0 0 10px", color: "#d35400" }}>Panduan Penggunaan</h3>
+        <h3 style={{ margin: "0 0 10px", color: "#e67e22" }}>Panduan Penggunaan</h3>
         <ul style={{ margin: "5px 0", paddingLeft: "20px" }}>
           <li>Gunakan HTTPS untuk mengakses halaman ini (kecuali localhost)</li>
           <li>Pastikan Anda telah memberikan izin akses kamera di browser</li>
