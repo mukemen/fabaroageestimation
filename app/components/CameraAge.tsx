@@ -1,15 +1,11 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 
-declare global { interface Window { Human?: any } }
-
 const HUMAN_VERSION = "3.3.6"
-const MODEL_BASES = [
-  `https://cdn.jsdelivr.net/npm/@vladmandic/human@${HUMAN_VERSION}/models`,
-  `https://unpkg.com/@vladmandic/human@${HUMAN_VERSION}/models`,
-]
-const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"] // nama file yang valid
+const MODEL_BASE = "/models" // disalin ke public/models saat install
+const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
 
+// timeout util biar gak ngegantung
 function withTimeout<T>(p: Promise<T>, ms = 8000, label = "timeout"): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(label)), ms)
@@ -34,6 +30,7 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
+  // Pre-list kamera
   useEffect(() => {
     (async () => {
       try {
@@ -41,7 +38,7 @@ export default function CameraAge() {
         s.getTracks().forEach(t => t.stop())
         const devices = await navigator.mediaDevices.enumerateDevices()
         setCameras(devices.filter(d => d.kind === "videoinput"))
-      } catch {}
+      } catch { /* ignore */ }
     })()
     return () => stopCam()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -65,42 +62,40 @@ export default function CameraAge() {
   }
 
   async function loadHuman() {
-    const HumanCtor = window.Human?.Human
-    if (!HumanCtor) throw new Error("Human.js belum termuat")
-
+    // Import ESM langsung dari package (tanpa <script> CDN)
+    const { Human } = await import("@vladmandic/human/dist/human.esm.js")
     let lastErr: any = null
-    for (const base of MODEL_BASES) {
-      for (const det of DETECTOR_FILES) {
-        try {
-          setStatus(`Memuat model… (${new URL(base).host} / ${det})`)
-          const human = new HumanCtor({
-            modelBasePath: base,
-            cacheSensitivity: 0,
-            backend: "webgl",
-            filter: { enabled: true, equalization: true },
-            face: {
-              enabled: true,
-              detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: det }, // <- file benar
-              mesh: { enabled: false },
-              iris: { enabled: false },
-              attention: { enabled: false },
-              description: { enabled: false },
-              gear: { enabled: true, modelPath: "gear/gear.json" }, // umur/gender
-              emotion: { enabled: false },
-              antispoof: { enabled: false },
-              liveness: { enabled: false },
-            },
-          })
-          await withTimeout(human.load(), 10000, "load models timeout")
-          await withTimeout(human.warmup(), 4000, "warmup timeout")
-          return human
-        } catch (e) {
-          console.warn("Gagal load:", base, det, e)
-          lastErr = e
-        }
+    for (const det of DETECTOR_FILES) {
+      try {
+        setStatus(`Memuat model… (local ${det})`)
+        const human = new Human({
+          version: HUMAN_VERSION,
+          modelBasePath: MODEL_BASE, // served dari domain sendiri
+          cacheSensitivity: 0,
+          backend: "webgl",
+          filter: { enabled: true, equalization: true },
+          face: {
+            enabled: true,
+            detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: det },
+            mesh: { enabled: false },
+            iris: { enabled: false },
+            attention: { enabled: false },
+            description: { enabled: false },
+            gear: { enabled: true, modelPath: "gear/gear.json" }, // umur/gender
+            emotion: { enabled: false },
+            antispoof: { enabled: false },
+            liveness: { enabled: false },
+          },
+        })
+        await withTimeout(human.load(), 10000, "load models timeout")
+        await withTimeout(human.warmup(), 4000, "warmup timeout")
+        return human
+      } catch (e) {
+        console.warn("Gagal load detektor:", det, e)
+        lastErr = e
       }
     }
-    throw new Error("Gagal memuat model dari semua CDN: " + (lastErr?.message || lastErr))
+    throw new Error("Gagal memuat model lokal: " + (lastErr?.message || lastErr))
   }
 
   async function startCam() {
