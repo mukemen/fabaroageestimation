@@ -152,14 +152,39 @@ export default function CameraAge() {
     }
   }
 
+  // Perbaikan kritis: Menggunakan pendekatan yang benar-benar menghindari analisis statis Webpack
   async function loadHumanCPU() {
     try {
       setStatus("Memuat library deteksi wajah...")
       
-      // Menghindari analisis statis Webpack dengan menggabungkan string
-      const packageName = '@vl' + 'admandic/human';
-      const mod: any = await import(/* webpackIgnore: true */ packageName);
-      const Human = mod.default || mod.Human;
+      // Teknik paling aman untuk dynamic import yang tidak terdeteksi oleh Webpack
+      // Menggunakan Function constructor untuk menghindari analisis statis
+      let Human;
+      try {
+        // Pendekatan 1: Gunakan Function constructor
+        const mod = await new Function('return import("@vladmandic/human")')();
+        Human = mod.default || mod.Human;
+        setStatus("Library deteksi wajah dimuat dengan Function constructor");
+      } catch (e) {
+        console.warn("Pendekatan 1 (Function constructor) gagal, mencoba pendekatan 2...", e);
+        try {
+          // Pendekatan 2: Dynamic import dengan string yang dipecah
+          const packageName = '@vl' + 'admandic/human';
+          const mod = await import(/* webpackIgnore: true */ packageName);
+          Human = mod.default || mod.Human;
+          setStatus("Library deteksi wajah dimuat dengan dynamic import");
+        } catch (e2) {
+          console.warn("Pendekatan 2 (dynamic import) gagal, mencoba pendekatan 3...", e2);
+          try {
+            // Pendekatan 3: Menggunakan eval (fallback terakhir)
+            Human = await eval(`import('@vladmandic/human')`).then(mod => mod.default || mod.Human);
+            setStatus("Library deteksi wajah dimuat dengan eval");
+          } catch (e3) {
+            console.error("Semua pendekatan gagal memuat Human.js", e3);
+            throw new Error("Gagal memuat library deteksi wajah. Pastikan @vladmandic/human terinstal dengan benar.");
+          }
+        }
+      }
 
       const baseCfg: any = {
         debug: false,
@@ -307,8 +332,23 @@ export default function CameraAge() {
       setStatus("Siap. Arahkan wajah ke kamera.")
     } catch (err: any) {
       console.error("Error startCam:", err)
+      
+      // Tampilkan pesan error yang lebih spesifik
+      let errorMessage = "Gagal memulai: ";
+      if (err.message.includes("Module")) {
+        errorMessage += "Gagal memuat library deteksi wajah. Pastikan @vladmandic/human terinstal dengan benar.";
+      } else if (err.message.includes("model")) {
+        errorMessage += "Model tidak lengkap. Pastikan file model ada di /models.";
+      } else if (err.message.includes("HTTPS")) {
+        errorMessage += "Akses kamera hanya tersedia melalui HTTPS (kecuali localhost).";
+      } else if (err.message.includes("camera")) {
+        errorMessage += "Gagal mengakses kamera. Pastikan tidak digunakan oleh aplikasi lain.";
+      } else {
+        errorMessage += err.message || "Kesalahan tidak diketahui";
+      }
+      
       stopCam()
-      setStatus("Gagal memulai: " + (err?.message || String(err)))
+      setStatus(errorMessage);
     }
   }
 
