@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Perkiraan Umur dari Wajah (On-Device)</title>
+  <meta name="description" content="Aplikasi demo untuk memperkirakan umur dari wajah secara lokal di perangkat, tanpa mengirim data ke server." />
+  <style>
+    :root { --bg:#0b0b0c; --fg:#f3f3f4; --accent:#00d4aa; --muted:#9aa1a7; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif; background: var(--bg); color: var(--fg); }
+    header { padding: 18px 16px; border-bottom: 1px solid #1c1f24; display:flex; align-items:center; gap:12px; }
+    .dot { width:10px; height:10px; border-radius: 99px; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+    h1 { font-size: 18px; margin:0; }
+    main { max-width: 1000px; margin: 0 auto; padding: 16px; display:grid; gap:16px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .wrap { position: relative; width: 100%; aspect-ratio: 16/9; background: #0f1216; border: 1px solid #1c1f24; border-radius: 16px; overflow: hidden; }
+    video, canvas { position:absolute; inset:0; width:100%; height:100%; object-fit: cover; }
+    .hud { position:absolute; left:12px; bottom:12px; background: rgba(10,12,14,.6); backdrop-filter: blur(6px); padding:10px 12px; border-radius:12px; font-size:14px; }
+    button, select { background:#12161b; color:var(--fg); border:1px solid #222933; padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:600; }
+    button:hover { border-color:#2b3441; }
+    .pill { padding: 6px 10px; border-radius: 999px; background:#11151a; border:1px solid #1f2630; color:var(--muted); font-size:12px; }
+    footer { color: var(--muted); font-size: 12px; padding: 0 16px 20px; line-height: 1.5; }
+    a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="dot"></div>
+    <h1>Age Estimation • On-Device (no server)</h1>
+  </header>
+
+  <main>
+    <div class="row">
+      <button id="startBtn">Izinkan Kamera</button>
+      <button id="stopBtn" disabled>Hentikan</button>
+      <select id="cameraSelect" title="Pilih kamera"></select>
+      <span class="pill" id="status">Status: idle</span>
+    </div>
+
+    <div class="wrap" id="stage">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div class="hud">
+        <div><b>Perkiraan Umur:</b> <span id="age">—</span></div>
+        <div><b>Confidence:</b> <span id="conf">—</span></div>
+        <div class="pill" id="fps">FPS: —</div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    Catatan: ini hanya perkiraan dan bisa bias/keliru. Mohon gunakan secara etis, minta <i>consent</i> dari pengguna,
+    dan jangan dipakai untuk keputusan yang berdampak (mis. rekrutmen/layanan). Semua proses di perangkat Anda—tidak ada
+    unggah gambar ke server.
+  </footer>
+
+  <!-- Human: face/age estimation, model otomatis dari CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/human/dist/human.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const statusEl = document.getElementById('status');
+    const ageEl = document.getElementById('age');
+    const confEl = document.getElementById('conf');
+    const fpsEl = document.getElementById('fps');
+    const ctx = canvas.getContext('2d');
+
+    const human = new Human.Human({
+      modelBasePath: 'https://cdn.jsdelivr.net/npm/@vladmandic/human/models',
+      cacheSensitivity: 0,
+      backend: 'webgl', // jatuh ke wasm bila perlu
+      filter: { enabled: true, equalization: true },
+      face: {
+        enabled: true,
+        detector: { rotation: true, maxDetected: 1 },
+        mesh: { enabled: false },
+        iris: { enabled: false },
+        attention: { enabled: false },
+        description: { enabled: false },
+        emotion: { enabled: false },
+        antispoof: { enabled: false },
+        liveness: { enabled: false }
+      }
+    });
+
+    let stream = null;
+    let running = false;
+
+    async function listCameras() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const vids = devices.filter(d => d.kind === 'videoinput');
+      cameraSelect.innerHTML = '';
+      vids.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Kamera ${i+1}`;
+        cameraSelect.appendChild(opt);
+      });
+    }
+
+    async function startCamera(deviceId) {
+      if (stream) stopCamera();
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: deviceId ? { deviceId: { exact: deviceId } } : {
+          facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }
+        },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      resizeCanvas();
+      statusEl.textContent = 'Status: kamera aktif';
+      stopBtn.disabled = false;
+      running = true;
+      loop();
+    }
+
+    function stopCamera() {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      stream = null;
+      running = false;
+      stopBtn.disabled = true;
+      statusEl.textContent = 'Status: berhenti';
+    }
+
+    function resizeCanvas() {
+      const rect = video.getBoundingClientRect();
+      canvas.width = video.videoWidth || rect.width;
+      canvas.height = video.videoHeight || rect.height;
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    async function loop() {
+      if (!running) return;
+      const ts = performance.now();
+      const result = await human.detect(video);
+      draw(result);
+      const dt = performance.now() - ts;
+      fpsEl.textContent = 'FPS: ' + Math.max(1, Math.round(1000 / dt));
+      requestAnimationFrame(loop);
+    }
+
+    function draw(res) {
+      const w = canvas.width, h = canvas.height;
+      const vw = video.videoWidth, vh = video.videoHeight;
+      // Paint latest frame to canvas
+      const drawW = w, drawH = h;
+      const off = document.createElement('canvas');
+      off.width = vw; off.height = vh;
+      const offCtx = off.getContext('2d');
+      offCtx.drawImage(video, 0, 0, vw, vh);
+      const ratio = Math.min(w/vw, h/vh);
+      const dw = vw*ratio, dh = vh*ratio;
+      const dx = (w - dw)/2, dy = (h - dh)/2;
+      const main = canvas.getContext('2d');
+      main.clearRect(0,0,w,h);
+      main.drawImage(off, 0, 0, vw, vh, dx, dy, dw, dh);
+
+      if (!res || !res.face || res.face.length === 0) {
+        ageEl.textContent = '—';
+        confEl.textContent = '—';
+        return;
+      }
+      const f = res.face[0];
+      // adjust box from source video to scaled canvas
+      const [bx, by, bw, bh] = f.box || [0,0,0,0];
+      const sx = dx + bx * ratio;
+      const sy = dy + by * ratio;
+      const sw = bw * ratio;
+      const sh = bh * ratio;
+
+      if (bw > 0 && bh > 0) {
+        main.strokeStyle = '#00d4aa';
+        main.lineWidth = 3;
+        main.strokeRect(sx, sy, sw, sh);
+      }
+      const age = (f.age) ? Math.round(f.age) : null;
+      const conf = f.score ? (f.score * 100).toFixed(1) + '%' : '—';
+      ageEl.textContent = age ? `${age} tahun` : '—';
+      confEl.textContent = conf;
+
+      if (age) {
+        main.fillStyle = 'rgba(0,0,0,.6)';
+        main.fillRect(sx, Math.max(0, sy-26), 120, 24);
+        main.fillStyle = '#fff';
+        main.font = '14px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+        main.fillText(`≈ ${age} th`, sx+8, Math.max(14, sy-8));
+      }
+    }
+
+    startBtn.addEventListener('click', async () => {
+      statusEl.textContent = 'Status: memuat model…';
+      await human.load();
+      await human.warmup();
+      await listCameras();
+      await startCamera(cameraSelect.value || undefined);
+      startBtn.disabled = true;
+    });
+
+    cameraSelect.addEventListener('change', async () => {
+      if (running) await startCamera(cameraSelect.value);
+    });
+
+    stopBtn.addEventListener('click', () => {
+      stopCamera();
+      startBtn.disabled = false;
+    });
+
+    // Pre-list cameras (labels require permission at least once)
+    navigator.mediaDevices?.getUserMedia({ video:true, audio:false })
+      .then(() => listCameras())
+      .catch(() => {/* ignore */});
+  </script>
+</body>
+</html>
