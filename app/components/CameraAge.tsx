@@ -28,7 +28,6 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
-  // Pre-list kamera
   useEffect(() => {
     const prep = async () => {
       try {
@@ -43,16 +42,14 @@ export default function CameraAge() {
   }, [])
 
   async function loadHuman() {
-    // Pastikan Human.js sudah dimuat via <Script> di layout
     const HumanCtor = window.Human?.Human
     if (!HumanCtor) throw new Error("Human.js belum termuat")
 
-    // Coba beberapa base CDN sampai berhasil
     let lastErr: any = null
     for (const base of MODEL_BASES) {
       try {
         const human = new HumanCtor({
-          modelBasePath: base,
+          modelBasePath: base,               // base folder
           cacheSensitivity: 0,
           backend: "webgl",
           filter: { enabled: true, equalization: true },
@@ -62,8 +59,9 @@ export default function CameraAge() {
             mesh: { enabled: false },
             iris: { enabled: false },
             attention: { enabled: false },
-            description: { enabled: false },
-            gear: { enabled: true },        // ← umur/gender berasal dari sini
+            description: { enabled: false },   // tidak dipakai utk age
+            // ✔ gunakan modul GEAR + path file JSON yang jelas
+            gear: { enabled: true, modelPath: "gear/gear.json" },
             emotion: { enabled: false },
             antispoof: { enabled: false },
             liveness: { enabled: false },
@@ -86,7 +84,6 @@ export default function CameraAge() {
       const human = await loadHuman()
       humanRef.current = human
 
-      // Stop stream lama bila ada
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(t => t.stop())
         streamRef.current = null
@@ -109,7 +106,6 @@ export default function CameraAge() {
       })
       await video.play()
 
-      // Sesuaikan kanvas
       const canvas = canvasRef.current!
       canvas.width = video.videoWidth
       canvas.height = video.videoHeight
@@ -122,7 +118,7 @@ export default function CameraAge() {
         if (!runningRef.current) return
         rafRef.current = requestAnimationFrame(loop)
         const now = performance.now()
-        if (now - lastDetect.current < 66) return // ~15 FPS deteksi
+        if (now - lastDetect.current < 66) return // ~15 FPS
         lastDetect.current = now
         detect()
       }
@@ -142,8 +138,6 @@ export default function CameraAge() {
 
     try {
       const result = await human.detect(video)
-
-      // gambar frame video
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
       if (!result?.face?.length) {
@@ -185,7 +179,6 @@ export default function CameraAge() {
     setStatus("Berhenti")
   }
 
-  // Ganti kamera saat dropdown berubah
   async function onChangeCamera(id: string) {
     setDeviceId(id || undefined)
     if (runningRef.current) {
