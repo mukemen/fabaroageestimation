@@ -55,8 +55,8 @@
     unggah gambar ke server.
   </footer>
 
-  <!-- Human: face/age estimation, model otomatis dari CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/human/dist/human.js"></script>
+  <!-- Human: pin ke versi terbaru stabil -->
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/dist/human.js"></script>
   <script>
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -70,9 +70,9 @@
     const ctx = canvas.getContext('2d');
 
     const human = new Human.Human({
-      modelBasePath: 'https://cdn.jsdelivr.net/npm/@vladmandic/human/models',
+      modelBasePath: 'https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/models',
       cacheSensitivity: 0,
-      backend: 'webgl', // jatuh ke wasm bila perlu
+      backend: 'webgl', // fallback ke wasm bila perlu
       filter: { enabled: true, equalization: true },
       face: {
         enabled: true,
@@ -80,7 +80,7 @@
         mesh: { enabled: false },
         iris: { enabled: false },
         attention: { enabled: false },
-        description: { enabled: false },
+        description: { enabled: true }, // <— WAJIB aktif untuk age & gender
         emotion: { enabled: false },
         antispoof: { enabled: false },
         liveness: { enabled: false }
@@ -89,6 +89,8 @@
 
     let stream = null;
     let running = false;
+
+    function setStatus(t){ statusEl.textContent = t; }
 
     async function listCameras() {
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -103,20 +105,24 @@
     }
 
     async function startCamera(deviceId) {
-      if (stream) stopCamera();
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: deviceId ? { deviceId: { exact: deviceId } } : {
-          facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }
-        },
-        audio: false
-      });
-      video.srcObject = stream;
-      await video.play();
-      resizeCanvas();
-      statusEl.textContent = 'Status: kamera aktif';
-      stopBtn.disabled = false;
-      running = true;
-      loop();
+      try {
+        if (stream) stopCamera();
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { exact: deviceId } } : {
+            facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }
+          },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        resizeCanvas();
+        setStatus('Status: kamera aktif');
+        stopBtn.disabled = false;
+        running = true;
+        loop();
+      } catch (err) {
+        setStatus('Gagal mengaktifkan kamera: ' + err.message);
+      }
     }
 
     function stopCamera() {
@@ -124,7 +130,7 @@
       stream = null;
       running = false;
       stopBtn.disabled = true;
-      statusEl.textContent = 'Status: berhenti';
+      setStatus('Status: berhenti');
     }
 
     function resizeCanvas() {
@@ -137,8 +143,12 @@
     async function loop() {
       if (!running) return;
       const ts = performance.now();
-      const result = await human.detect(video);
-      draw(result);
+      try {
+        const result = await human.detect(video);
+        draw(result);
+      } catch (err) {
+        setStatus('Error deteksi: ' + err.message);
+      }
       const dt = performance.now() - ts;
       fpsEl.textContent = 'FPS: ' + Math.max(1, Math.round(1000 / dt));
       requestAnimationFrame(loop);
@@ -147,18 +157,12 @@
     function draw(res) {
       const w = canvas.width, h = canvas.height;
       const vw = video.videoWidth, vh = video.videoHeight;
-      // Paint latest frame to canvas
-      const drawW = w, drawH = h;
-      const off = document.createElement('canvas');
-      off.width = vw; off.height = vh;
-      const offCtx = off.getContext('2d');
-      offCtx.drawImage(video, 0, 0, vw, vh);
+      // gambar frame video ke canvas dengan letterbox
       const ratio = Math.min(w/vw, h/vh);
       const dw = vw*ratio, dh = vh*ratio;
       const dx = (w - dw)/2, dy = (h - dh)/2;
-      const main = canvas.getContext('2d');
-      main.clearRect(0,0,w,h);
-      main.drawImage(off, 0, 0, vw, vh, dx, dy, dw, dh);
+      ctx.clearRect(0,0,w,h);
+      ctx.drawImage(video, 0, 0, vw, vh, dx, dy, dw, dh);
 
       if (!res || !res.face || res.face.length === 0) {
         ageEl.textContent = '—';
@@ -166,7 +170,6 @@
         return;
       }
       const f = res.face[0];
-      // adjust box from source video to scaled canvas
       const [bx, by, bw, bh] = f.box || [0,0,0,0];
       const sx = dx + bx * ratio;
       const sy = dy + by * ratio;
@@ -174,31 +177,36 @@
       const sh = bh * ratio;
 
       if (bw > 0 && bh > 0) {
-        main.strokeStyle = '#00d4aa';
-        main.lineWidth = 3;
-        main.strokeRect(sx, sy, sw, sh);
+        ctx.strokeStyle = '#00d4aa';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(sx, sy, sw, sh);
       }
-      const age = (f.age) ? Math.round(f.age) : null;
+      const age = (f.age != null) ? Math.round(f.age) : null;
       const conf = f.score ? (f.score * 100).toFixed(1) + '%' : '—';
       ageEl.textContent = age ? `${age} tahun` : '—';
       confEl.textContent = conf;
 
       if (age) {
-        main.fillStyle = 'rgba(0,0,0,.6)';
-        main.fillRect(sx, Math.max(0, sy-26), 120, 24);
-        main.fillStyle = '#fff';
-        main.font = '14px system-ui, -apple-system, Segoe UI, Roboto, Arial';
-        main.fillText(`≈ ${age} th`, sx+8, Math.max(14, sy-8));
+        ctx.fillStyle = 'rgba(0,0,0,.6)';
+        ctx.fillRect(sx, Math.max(0, sy-26), 120, 24);
+        ctx.fillStyle = '#fff';
+        ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+        ctx.fillText(`≈ ${age} th`, sx+8, Math.max(14, sy-8));
       }
     }
 
     startBtn.addEventListener('click', async () => {
-      statusEl.textContent = 'Status: memuat model…';
-      await human.load();
-      await human.warmup();
-      await listCameras();
-      await startCamera(cameraSelect.value || undefined);
-      startBtn.disabled = true;
+      try {
+        setStatus('Status: memuat model…');
+        await human.load();
+        await human.warmup();
+        await listCameras();
+        await startCamera(cameraSelect.value || undefined);
+        startBtn.disabled = true;
+        setStatus('Siap. Arahkan wajah ke kamera.');
+      } catch (err) {
+        setStatus('Gagal memuat model: ' + err.message);
+      }
     });
 
     cameraSelect.addEventListener('change', async () => {
