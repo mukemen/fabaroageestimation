@@ -1,91 +1,120 @@
 "use client"
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from "react"
 
 declare global {
   interface Window { Human?: any }
 }
 
-const HUMAN_VERSION = '3.3.6'
-const MODEL_BASE = `https://cdn.jsdelivr.net/npm/@vladmandic/human@${HUMAN_VERSION}/models`
+const HUMAN_VERSION = "3.3.6"
+const MODEL_BASES = [
+  `https://cdn.jsdelivr.net/npm/@vladmandic/human@${HUMAN_VERSION}/models`,
+  `https://unpkg.com/@vladmandic/human@${HUMAN_VERSION}/models`,
+]
 
 export default function CameraAge() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  const [status, setStatus] = useState('Idle')
-  const [age, setAge] = useState<string>('—')
-  const [conf, setConf] = useState<string>('—')
+  const [status, setStatus] = useState("Idle")
+  const [age, setAge] = useState<string>("—")
+  const [conf, setConf] = useState<string>("—")
   const [fps, setFps] = useState<number>(0)
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined)
 
   const humanRef = useRef<any>(null)
-  const lastDetect = useRef<number>(0)
-  const runningRef = useRef<boolean>(false) // <- hindari stale state
+  const streamRef = useRef<MediaStream | null>(null)
+  const runningRef = useRef<boolean>(false)
   const rafRef = useRef<number | null>(null)
+  const lastDetect = useRef<number>(0)
 
+  // Pre-list kamera
   useEffect(() => {
-    // Pre-list kamera (label butuh izin minimal sekali)
-    navigator.mediaDevices?.getUserMedia({ video: true, audio: false })
-      .then(() => navigator.mediaDevices.enumerateDevices())
-      .then((devices) => setCameras(devices.filter(d => d.kind === 'videoinput')))
-      .catch(() => {/* abaikan */})
+    const prep = async () => {
+      try {
+        await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        setCameras(devices.filter(d => d.kind === "videoinput"))
+      } catch { /* ignore */ }
+    }
+    prep()
     return () => stopCam()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function loadHuman() {
+    // Pastikan Human.js sudah dimuat via <Script> di layout
+    const HumanCtor = window.Human?.Human
+    if (!HumanCtor) throw new Error("Human.js belum termuat")
+
+    // Coba beberapa base CDN sampai berhasil
+    let lastErr: any = null
+    for (const base of MODEL_BASES) {
+      try {
+        const human = new HumanCtor({
+          modelBasePath: base,
+          cacheSensitivity: 0,
+          backend: "webgl",
+          filter: { enabled: true, equalization: true },
+          face: {
+            enabled: true,
+            detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0 },
+            mesh: { enabled: false },
+            iris: { enabled: false },
+            attention: { enabled: false },
+            description: { enabled: false },
+            gear: { enabled: true },        // ← umur/gender berasal dari sini
+            emotion: { enabled: false },
+            antispoof: { enabled: false },
+            liveness: { enabled: false },
+          },
+        })
+        await human.load()
+        await human.warmup()
+        return human
+      } catch (e) {
+        console.warn("Gagal load model dari", base, e)
+        lastErr = e
+      }
+    }
+    throw new Error("Gagal memuat model dari semua CDN: " + (lastErr?.message || lastErr))
+  }
 
   async function startCam() {
     try {
-      setStatus('Memuat model…')
-      const Human = window.Human?.Human
-      if (!Human) { setStatus('Human.js belum termuat. Coba lagi sebentar.'); return }
-
-      // ⚙️ Konfigurasi: aktifkan face.gear (Age/Gender/Emotion/Race)
-      const human = new Human({
-        modelBasePath: MODEL_BASE,
-        cacheSensitivity: 0,
-        backend: 'webgl',
-        filter: { enabled: true, equalization: true },
-        face: {
-          enabled: true,
-          detector: {
-            rotation: true,
-            maxDetected: 1,
-            minConfidence: 0.2,     // lebih toleran
-            skipFrames: 0,
-          },
-          mesh: { enabled: false },
-          iris: { enabled: false },
-          attention: { enabled: false },
-          description: { enabled: false }, // tidak perlu untuk age
-          emotion: { enabled: false },
-          gear: { enabled: true },        // <- WAJIB untuk age
-          antispoof: { enabled: false },
-          liveness: { enabled: false }
-        }
-      })
+      setStatus("Memuat model…")
+      const human = await loadHuman()
       humanRef.current = human
-      await human.load()
-      await human.warmup()
+
+      // Stop stream lama bila ada
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop())
+        streamRef.current = null
+      }
 
       const constraints: MediaStreamConstraints = {
-        video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
+        video: deviceId ? { deviceId: { exact: deviceId } } : {
+          facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }
+        },
+        audio: false,
       }
       const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      streamRef.current = stream
+
       const video = videoRef.current!
       video.srcObject = stream
-      await new Promise<void>(res => {  // tunggu metadata biar dimensi valid
-        const onMeta = () => { res(); video.removeEventListener('loadedmetadata', onMeta) }
-        video.addEventListener('loadedmetadata', onMeta)
+      await new Promise<void>(res => {
+        const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
+        video.addEventListener("loadedmetadata", onMeta)
       })
       await video.play()
 
-      // ukuran kanvas = frame video
+      // Sesuaikan kanvas
       const canvas = canvasRef.current!
       canvas.width = video.videoWidth
       canvas.height = video.videoHeight
 
-      setStatus('Kamera aktif')
+      setStatus("Kamera aktif")
       runningRef.current = true
       lastDetect.current = performance.now()
 
@@ -93,14 +122,14 @@ export default function CameraAge() {
         if (!runningRef.current) return
         rafRef.current = requestAnimationFrame(loop)
         const now = performance.now()
-        if (now - lastDetect.current < 66) return // ~15 fps
+        if (now - lastDetect.current < 66) return // ~15 FPS deteksi
         lastDetect.current = now
         detect()
       }
       rafRef.current = requestAnimationFrame(loop)
 
     } catch (err: any) {
-      setStatus('Gagal: ' + (err?.message || err))
+      setStatus("Gagal: " + (err?.message || String(err)))
     }
   }
 
@@ -108,39 +137,39 @@ export default function CameraAge() {
     const human = humanRef.current
     const video = videoRef.current!
     const canvas = canvasRef.current!
-    const ctx = canvas.getContext('2d')!
+    const ctx = canvas.getContext("2d")!
     const t0 = performance.now()
 
     try {
       const result = await human.detect(video)
-      // gambar frame
+
+      // gambar frame video
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
       if (!result?.face?.length) {
-        setAge('—'); setConf('—')
+        setAge("—"); setConf("—")
       } else {
         const f = result.face[0]
-        const [bx, by, bw, bh] = f.box || [0,0,0,0]
+        const [bx, by, bw, bh] = f.box || [0, 0, 0, 0]
         if (bw > 0 && bh > 0) {
-          ctx.strokeStyle = '#00d4aa'
+          ctx.strokeStyle = "#00d4aa"
           ctx.lineWidth = 3
           ctx.strokeRect(bx, by, bw, bh)
         }
-        // age dari modul "gear"
         const a = (f.age != null) ? Math.round(f.age) : null
-        const c = f.score ? (f.score * 100).toFixed(1) + '%' : '—'
-        setAge(a ? `${a} tahun` : '—')
+        const c = f.score ? (f.score * 100).toFixed(1) + "%" : "—"
+        setAge(a ? `${a} tahun` : "—")
         setConf(c)
         if (a) {
-          ctx.fillStyle = 'rgba(0,0,0,.6)'
-          ctx.fillRect(bx, Math.max(0, by-26), 120, 24)
-          ctx.fillStyle = '#fff'
-          ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto, Arial'
+          ctx.fillStyle = "rgba(0,0,0,.6)"
+          ctx.fillRect(bx, Math.max(0, by - 26), 120, 24)
+          ctx.fillStyle = "#fff"
+          ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto, Arial"
           ctx.fillText(`≈ ${a} th`, bx + 8, Math.max(14, by - 8))
         }
       }
-    } catch (e:any) {
-      setStatus('Error deteksi: ' + (e?.message || e))
+    } catch (e: any) {
+      setStatus("Error deteksi: " + (e?.message || String(e)))
     } finally {
       const dt = performance.now() - t0
       setFps(Math.max(1, Math.round(1000 / dt)))
@@ -150,14 +179,24 @@ export default function CameraAge() {
   function stopCam() {
     runningRef.current = false
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    const video = videoRef.current
-    if (video?.srcObject) (video.srcObject as MediaStream).getTracks().forEach(t => t.stop())
-    setStatus('Berhenti')
+    const v = videoRef.current
+    if (v?.srcObject) (v.srcObject as MediaStream).getTracks().forEach(t => t.stop())
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
+    setStatus("Berhenti")
+  }
+
+  // Ganti kamera saat dropdown berubah
+  async function onChangeCamera(id: string) {
+    setDeviceId(id || undefined)
+    if (runningRef.current) {
+      stopCam()
+      await startCam()
+    }
   }
 
   return (
     <main className="container">
-      <header className="header" style={{display:'flex',alignItems:'center',gap:12}}>
+      <header className="header" style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <img src="/logo/logo-horizontal.png" alt="Fabaro Age Estimation" height={40} />
         <span className="badge">PWA</span>
       </header>
@@ -165,9 +204,11 @@ export default function CameraAge() {
       <div className="row">
         <button className="btn" onClick={startCam}>Izinkan Kamera</button>
         <button className="btn" onClick={stopCam}>Hentikan</button>
-        <select className="btn" value={deviceId} onChange={(e)=>setDeviceId(e.currentTarget.value)}>
+        <select className="btn" value={deviceId} onChange={(e) => onChangeCamera(e.currentTarget.value)}>
           <option value="">Pilih kamera…</option>
-          {cameras.map((c,i)=>(<option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i+1}`}</option>))}
+          {cameras.map((c, i) => (
+            <option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i + 1}`}</option>
+          ))}
         </select>
         <span className="pill">Status: {status}</span>
       </div>
@@ -178,7 +219,7 @@ export default function CameraAge() {
         <div className="hud">
           <div><b>Perkiraan Umur:</b> <span>{age}</span></div>
           <div><b>Confidence:</b> <span>{conf}</span></div>
-          <div className="pill">FPS: {fps || '—'}</div>
+          <div className="pill">FPS: {fps || "—"}</div>
         </div>
       </div>
 
