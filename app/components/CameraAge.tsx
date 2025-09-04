@@ -2,6 +2,10 @@
 import { useEffect, useRef, useState } from "react"
 
 // Model Human disajikan dari domain sendiri (public/models)
+// Pastikan di deploy ada file:
+// - /models/blazeface-front.json (atau blazeface-back.json)
+// - /models/faceres.json
+// - /models/gear.json
 const MODEL_BASE = "/models"
 const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
 
@@ -22,9 +26,12 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
-  // -------- Helpers
+  // ---------- Helpers ----------
   async function ensureCamera() {
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
     const constraints: MediaStreamConstraints = {
       video: deviceId ? { deviceId: { exact: deviceId } } :
         { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -34,7 +41,10 @@ export default function CameraAge() {
     streamRef.current = stream
     const video = videoRef.current!
     video.srcObject = stream
-    await new Promise<void>(res => { const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }; video.addEventListener("loadedmetadata", onMeta) })
+    await new Promise<void>(res => {
+      const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
+      video.addEventListener("loadedmetadata", onMeta)
+    })
     await video.play()
     const canvas = canvasRef.current!
     canvas.width = video.videoWidth
@@ -43,19 +53,19 @@ export default function CameraAge() {
 
   async function selfTestModels() {
     try {
-      const a = await fetch("/models/gear/gear.json", { cache: "no-store" })
-      const b = await fetch("/models/blazeface-front.json", { cache: "no-store" })
-      if (!a.ok || !b.ok) throw new Error("404")
+      const urls = ["/models/blazeface-front.json", "/models/faceres.json", "/models/gear.json"]
+      const oks = await Promise.all(urls.map(u => fetch(u, { cache: "no-store" }).then(r => r.ok)))
+      if (!oks.every(Boolean)) throw new Error("model missing")
       return true
     } catch { return false }
   }
 
   async function loadHumanCPU() {
-    // ❗ import dari paket (paket ini tidak punya tipe TS → kita treat as any)
+    // import paket (tanpa tipe, treat as any)
     const mod: any = await import("@vladmandic/human")
     const Human = mod.default || mod.Human
 
-    // Gunakan backend CPU (paling stabil di semua HP), tanpa warmup
+    // Konfigurasi stabil: CPU-only (tanpa warmup), age via description + gear
     const cfg: any = {
       debug: false,
       modelBasePath: MODEL_BASE,
@@ -64,18 +74,23 @@ export default function CameraAge() {
       filter: { enabled: true, equalization: true },
       face: {
         enabled: true,
-        detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: DETECTOR_FILES[0] },
-        mesh: { enabled: false },
-        iris: { enabled: false },
-        attention: { enabled: false },
-        description: { enabled: false },
-        gear: { enabled: true, modelPath: "gear/gear.json" }, // umur/gender
-        emotion: { enabled: false },
-        antispoof: { enabled: false },
-        liveness: { enabled: false },
+        detector: {
+          rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0,
+          modelPath: DETECTOR_FILES[0], // coba front dahulu
+        },
+        // WAJIB untuk memunculkan age dari FaceRes
+        description: { enabled: true, modelPath: "faceres.json" },
+        // Tambahan prediktor (juga punya age)
+        gear: { enabled: true, modelPath: "gear.json" },
+
+        // Lainnya dimatikan untuk ringan
+        mesh: { enabled: false }, iris: { enabled: false },
+        attention: { enabled: false }, emotion: { enabled: false },
+        antispoof: { enabled: false }, liveness: { enabled: false },
       },
     }
 
+    // Coba 2 detektor (front/back)
     for (const det of DETECTOR_FILES) {
       try {
         cfg.face.detector.modelPath = det
@@ -88,11 +103,12 @@ export default function CameraAge() {
         console.warn("Gagal load detektor:", det, e)
       }
     }
-    throw new Error("Model lokal tidak ditemukan / gagal dimuat")
+    throw new Error("Model lokal tidak lengkap / gagal dimuat")
   }
 
-  // -------- Lifecycle
+  // ---------- Lifecycle ----------
   useEffect(() => {
+    // pre-list kamera (agar dropdown ada pilihan)
     (async () => {
       try {
         const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
@@ -107,10 +123,11 @@ export default function CameraAge() {
 
   async function startCam() {
     try {
-      setStatus("Menyalakan kamera…"); await ensureCamera()
+      setStatus("Menyalakan kamera…")
+      await ensureCamera()
 
       if (!(await selfTestModels())) {
-        setStatus("Model TIDAK ada di /models — pastikan folder public/models ikut terdeploy")
+        setStatus("Model TIDAK lengkap di /models (butuh: blazeface-front.json, faceres.json, gear.json)")
         return
       }
 
@@ -137,8 +154,11 @@ export default function CameraAge() {
 
   async function detect() {
     const human = humanRef.current
-    const video = videoRef.current!, canvas = canvasRef.current!, ctx = canvas.getContext("2d")!
+    const video = videoRef.current!
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext("2d")!
     const t0 = performance.now()
+
     try {
       const result = await human.detect(video)
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
@@ -149,10 +169,17 @@ export default function CameraAge() {
         const f = result.face[0]
         const [bx, by, bw, bh] = f.box || [0,0,0,0]
         if (bw>0 && bh>0) { ctx.strokeStyle = "#00d4aa"; ctx.lineWidth = 3; ctx.strokeRect(bx,by,bw,bh) }
+
+        // Age dari FaceRes/GEAR → f.age
         const a = (f.age != null) ? Math.round(f.age) : null
+
+        // Confidence: gunakan score yang tersedia
         const score = (f.faceScore ?? f.boxScore ?? f.score ?? 0) as number
         const c = score ? (score * 100).toFixed(1) + "%" : "—"
-        setAge(a ? `${a} tahun` : "—"); setConf(c)
+
+        setAge(a ? `${a} tahun` : "—")
+        setConf(c)
+
         if (a) {
           ctx.fillStyle = "rgba(0,0,0,.6)"
           ctx.fillRect(bx, Math.max(0, by-26), 120, 24)
