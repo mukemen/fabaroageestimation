@@ -1,17 +1,15 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 
-declare global {
-  interface Window { Human?: any }
-}
+declare global { interface Window { Human?: any } }
 
 const HUMAN_VERSION = "3.3.6"
 const MODEL_BASES = [
   `https://cdn.jsdelivr.net/npm/@vladmandic/human@${HUMAN_VERSION}/models`,
   `https://unpkg.com/@vladmandic/human@${HUMAN_VERSION}/models`,
 ]
+const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"] // nama file yang valid
 
-// util: timeout promise
 function withTimeout<T>(p: Promise<T>, ms = 8000, label = "timeout"): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(label)), ms)
@@ -36,26 +34,21 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
-  // 1) Minta izin kamera dulu supaya video jalan lebih dulu
   useEffect(() => {
     (async () => {
       try {
         const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-        s.getTracks().forEach(t => t.stop()) // kita hanya butuh izin & list devices
+        s.getTracks().forEach(t => t.stop())
         const devices = await navigator.mediaDevices.enumerateDevices()
         setCameras(devices.filter(d => d.kind === "videoinput"))
-      } catch {/* abaikan */}
+      } catch {}
     })()
     return () => stopCam()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function ensureCamera() {
-    // stop stream lama
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
-      streamRef.current = null
-    }
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
     const constraints: MediaStreamConstraints = {
       video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
@@ -64,10 +57,7 @@ export default function CameraAge() {
     streamRef.current = stream
     const video = videoRef.current!
     video.srcObject = stream
-    await new Promise<void>(res => {
-      const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
-      video.addEventListener("loadedmetadata", onMeta)
-    })
+    await new Promise<void>(res => { const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }; video.addEventListener("loadedmetadata", onMeta) })
     await video.play()
     const canvas = canvasRef.current!
     canvas.width = video.videoWidth
@@ -80,33 +70,34 @@ export default function CameraAge() {
 
     let lastErr: any = null
     for (const base of MODEL_BASES) {
-      try {
-        setStatus(`Memuat model… (${new URL(base).host})`)
-        const human = new HumanCtor({
-          modelBasePath: base,
-          cacheSensitivity: 0,
-          backend: "webgl",
-          filter: { enabled: true, equalization: true },
-          face: {
-            enabled: true,
-            // ⬇️ Penting: set file model eksplisit supaya tidak jatuh ke '/models/'
-            detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: "blazeface.json" },
-            mesh: { enabled: false },
-            iris: { enabled: false },
-            attention: { enabled: false },
-            description: { enabled: false },
-            gear: { enabled: true, modelPath: "gear/gear.json" }, // age/gender
-            emotion: { enabled: false },
-            antispoof: { enabled: false },
-            liveness: { enabled: false },
-          },
-        })
-        await withTimeout(human.load(), 8000, "load models timeout")
-        await withTimeout(human.warmup(), 4000, "warmup timeout")
-        return human
-      } catch (e) {
-        console.warn("Gagal load dari", base, e)
-        lastErr = e
+      for (const det of DETECTOR_FILES) {
+        try {
+          setStatus(`Memuat model… (${new URL(base).host} / ${det})`)
+          const human = new HumanCtor({
+            modelBasePath: base,
+            cacheSensitivity: 0,
+            backend: "webgl",
+            filter: { enabled: true, equalization: true },
+            face: {
+              enabled: true,
+              detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: det }, // <- file benar
+              mesh: { enabled: false },
+              iris: { enabled: false },
+              attention: { enabled: false },
+              description: { enabled: false },
+              gear: { enabled: true, modelPath: "gear/gear.json" }, // umur/gender
+              emotion: { enabled: false },
+              antispoof: { enabled: false },
+              liveness: { enabled: false },
+            },
+          })
+          await withTimeout(human.load(), 10000, "load models timeout")
+          await withTimeout(human.warmup(), 4000, "warmup timeout")
+          return human
+        } catch (e) {
+          console.warn("Gagal load:", base, det, e)
+          lastErr = e
+        }
       }
     }
     throw new Error("Gagal memuat model dari semua CDN: " + (lastErr?.message || lastErr))
@@ -114,70 +105,50 @@ export default function CameraAge() {
 
   async function startCam() {
     try {
-      setStatus("Menyalakan kamera…")
-      await ensureCamera()
+      setStatus("Menyalakan kamera…"); await ensureCamera()
       setStatus("Kamera aktif — memuat model…")
-
       const human = await loadHuman()
       humanRef.current = human
 
       runningRef.current = true
       lastDetect.current = performance.now()
-
       const loop = () => {
         if (!runningRef.current) return
         rafRef.current = requestAnimationFrame(loop)
         const now = performance.now()
-        if (now - lastDetect.current < 66) return // ~15 FPS
+        if (now - lastDetect.current < 66) return
         lastDetect.current = now
         detect()
       }
       rafRef.current = requestAnimationFrame(loop)
       setStatus("Siap. Arahkan wajah ke kamera.")
-
     } catch (err: any) {
-      setStatus("Gagal: " + (err?.message || String(err)) + ". Coba refresh & izinkan kamera lagi.")
+      setStatus("Gagal: " + (err?.message || String(err)))
     }
   }
 
   async function detect() {
     const human = humanRef.current
-    const video = videoRef.current!
-    const canvas = canvasRef.current!
-    const ctx = canvas.getContext("2d")!
+    const video = videoRef.current!, canvas = canvasRef.current!, ctx = canvas.getContext("2d")!
     const t0 = performance.now()
-
     try {
       const result = await human.detect(video)
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-      if (!result?.face?.length) {
-        setAge("—"); setConf("—")
-      } else {
+      if (!result?.face?.length) { setAge("—"); setConf("—") }
+      else {
         const f = result.face[0]
-        const [bx, by, bw, bh] = f.box || [0, 0, 0, 0]
-        if (bw > 0 && bh > 0) {
-          ctx.strokeStyle = "#00d4aa"
-          ctx.lineWidth = 3
-          ctx.strokeRect(bx, by, bw, bh)
-        }
+        const [bx, by, bw, bh] = f.box || [0,0,0,0]
+        if (bw>0 && bh>0) { ctx.strokeStyle = "#00d4aa"; ctx.lineWidth = 3; ctx.strokeRect(bx,by,bw,bh) }
         const a = (f.age != null) ? Math.round(f.age) : null
         const c = f.score ? (f.score * 100).toFixed(1) + "%" : "—"
-        setAge(a ? `${a} tahun` : "—")
-        setConf(c)
-        if (a) {
-          ctx.fillStyle = "rgba(0,0,0,.6)"
-          ctx.fillRect(bx, Math.max(0, by - 26), 120, 24)
-          ctx.fillStyle = "#fff"
-          ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto, Arial"
-          ctx.fillText(`≈ ${a} th`, bx + 8, Math.max(14, by - 8))
-        }
+        setAge(a ? `${a} tahun` : "—"); setConf(c)
+        if (a) { ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(bx, Math.max(0, by-26), 120, 24); ctx.fillStyle = "#fff"; ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto, Arial"; ctx.fillText(`≈ ${a} th`, bx+8, Math.max(14, by-8)) }
       }
-    } catch (e: any) {
+    } catch (e:any) {
       setStatus("Error deteksi: " + (e?.message || String(e)))
     } finally {
       const dt = performance.now() - t0
-      setFps(Math.max(1, Math.round(1000 / dt)))
+      setFps(Math.max(1, Math.round(1000/dt)))
     }
   }
 
@@ -192,10 +163,7 @@ export default function CameraAge() {
 
   async function onChangeCamera(id: string) {
     setDeviceId(id || undefined)
-    if (runningRef.current) {
-      stopCam()
-      await startCam()
-    }
+    if (runningRef.current) { stopCam(); await startCam() }
   }
 
   return (
@@ -210,9 +178,7 @@ export default function CameraAge() {
         <button className="btn" onClick={stopCam}>Hentikan</button>
         <select className="btn" value={deviceId} onChange={(e) => onChangeCamera(e.currentTarget.value)}>
           <option value="">Pilih kamera…</option>
-          {cameras.map((c, i) => (
-            <option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i + 1}`}</option>
-          ))}
+          {cameras.map((c,i)=> <option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i+1}`}</option>)}
         </select>
         <span className="pill">Status: {status}</span>
       </div>
