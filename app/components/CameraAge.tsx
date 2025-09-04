@@ -1,10 +1,10 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 
-const MODEL_BASE = "/models" // model Human disalin ke public/models
+const MODEL_BASE = "/models" // model Human disalin ke public/models via postinstall
 const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
 
-// util kecil: timeout, tapi kita tidak mem-fail total untuk warmup
+// util kecil: timeout; untuk warmup kita tidak mem-fail total
 function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("timeout")), ms)
@@ -71,9 +71,11 @@ export default function CameraAge() {
   }
 
   async function loadHuman() {
-    const { Human } = await import("@vladmandic/human/dist/human.esm.js")
+    // ✅ impor default dari paket (bukan dari /dist)
+    const mod = await import("@vladmandic/human")
+    const Human = (mod as any).default || (mod as any).Human
 
-    // config dasar (pakai webgl dulu)
+    // config awal (pakai WebGL dahulu)
     const baseConfig: any = {
       modelBasePath: MODEL_BASE,
       cacheSensitivity: 0,
@@ -99,25 +101,24 @@ export default function CameraAge() {
         setStatus(`Memuat model lokal… (${det})`)
         baseConfig.face.detector.modelPath = det
         const human = new Human(baseConfig)
-        await withTimeout(human.load(), 12000) // muat model
 
-        // warmup: JANGAN dianggap fatal. Coba webgl → kalau timeout, fallback cpu.
+        await withTimeout(human.load(), 12000) // load model
+
+        // Warmup jangan bikin gagal total: coba WebGL → kalau timeout, fallback CPU
         try {
           await withTimeout(human.warmup(), 5000)
           setStatus("Model siap (WebGL)")
           return human
         } catch {
-          // fallback ke CPU agar tetap jalan di device yang GPU-nya bermasalah
           try {
-            // @ts-ignore
             await human.tf.setBackend("cpu")
             await human.tf.ready()
-            await withTimeout(human.warmup(), 4000).catch(()=>{}) // abaikan hasil
+            await withTimeout(human.warmup(), 4000).catch(()=>{}) // abaikan jika lama
             setStatus("Model siap (CPU fallback)")
             return human
           } catch (e) {
             console.warn("Fallback CPU gagal:", e)
-            // lanjut ke detektor berikutnya
+            // lanjut mencoba detektor berikutnya
           }
         }
       } catch (e) {
@@ -133,7 +134,7 @@ export default function CameraAge() {
       await ensureCamera()
 
       if (!(await selfTestModels())) {
-        setStatus("Model TIDAK ditemukan di /models — push folder public/models ke repo")
+        setStatus("Model TIDAK ditemukan di /models — pastikan folder public/models ikut terdeploy")
         return
       }
 
