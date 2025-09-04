@@ -8,7 +8,7 @@ export default function CameraAge() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  const [status, setStatus] = useState("Idle")
+  const [status, setStatus] = useState("Siap mengakses kamera")
   const [age, setAge] = useState<string>("—")
   const [conf, setConf] = useState<string>("—")
   const [fps, setFps] = useState<number>(0)
@@ -134,7 +134,7 @@ export default function CameraAge() {
           fetch(`${MODEL_BASE}/${file}`, { cache: "force-cache" }).then(r => r.ok)
         )
       );
-      if (!detectorChecks.some(Boolean)) throw new Error("No detector model");
+      if (!detectorChecks.some(Boolean)) throw new Error("Tidak ada model detektor yang tersedia");
 
       // Cek model wajib lainnya
       const requiredModels = ["faceres.json", "gear.json"];
@@ -143,7 +143,7 @@ export default function CameraAge() {
           fetch(`${MODEL_BASE}/${file}`, { cache: "force-cache" }).then(r => r.ok)
         )
       );
-      if (!modelChecks.every(Boolean)) throw new Error("Required models missing");
+      if (!modelChecks.every(Boolean)) throw new Error("Model yang diperlukan tidak lengkap");
       
       return true;
     } catch (e) {
@@ -158,26 +158,24 @@ export default function CameraAge() {
       setStatus("Memuat library deteksi wajah...")
       
       // Teknik paling aman untuk dynamic import yang tidak terdeteksi oleh Webpack
-      // Menggunakan Function constructor untuk menghindari analisis statis
       let Human;
+      
       try {
-        // Pendekatan 1: Gunakan Function constructor
-        const mod = await new Function('return import("@vladmandic/human")')();
-        Human = mod.default || mod.Human;
+        // Pendekatan 1: Gunakan Function constructor (paling ampuh)
+        Human = await new Function('return import("@vladmandic/human")')().then(m => m.default || m.Human);
         setStatus("Library deteksi wajah dimuat dengan Function constructor");
       } catch (e) {
-        console.warn("Pendekatan 1 (Function constructor) gagal, mencoba pendekatan 2...", e);
+        console.warn("Pendekatan 1 gagal, mencoba pendekatan 2...", e);
         try {
           // Pendekatan 2: Dynamic import dengan string yang dipecah
           const packageName = '@vl' + 'admandic/human';
-          const mod = await import(/* webpackIgnore: true */ packageName);
-          Human = mod.default || mod.Human;
+          Human = await import(/* webpackIgnore: true */ packageName).then(m => m.default || m.Human);
           setStatus("Library deteksi wajah dimuat dengan dynamic import");
         } catch (e2) {
-          console.warn("Pendekatan 2 (dynamic import) gagal, mencoba pendekatan 3...", e2);
+          console.warn("Pendekatan 2 gagal, mencoba pendekatan 3...", e2);
           try {
             // Pendekatan 3: Menggunakan eval (fallback terakhir)
-            Human = await eval(`import('@vladmandic/human')`).then(mod => mod.default || mod.Human);
+            Human = await eval(`import('@vladmandic/human')`).then(m => m.default || m.Human);
             setStatus("Library deteksi wajah dimuat dengan eval");
           } catch (e3) {
             console.error("Semua pendekatan gagal memuat Human.js", e3);
