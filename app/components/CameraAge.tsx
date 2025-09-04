@@ -1,7 +1,7 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 
-// Model Human ada di public/models (disalin saat postinstall)
+// Model Human disajikan dari domain sendiri (public/models)
 const MODEL_BASE = "/models"
 const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
 
@@ -22,7 +22,7 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
-  // --- Helpers ---------------------------------------------------------------
+  // -------- Helpers
   async function ensureCamera() {
     if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
     const constraints: MediaStreamConstraints = {
@@ -51,11 +51,11 @@ export default function CameraAge() {
   }
 
   async function loadHumanCPU() {
-    // Import ESM dari package (Next akan bundle untuk client)
-    const m = await import("@vladmandic/human")
-    const Human = (m as any).default || (m as any).Human
+    // ❗ import dari paket (paket ini tidak punya tipe TS → kita treat as any)
+    const mod: any = await import("@vladmandic/human")
+    const Human = mod.default || mod.Human
 
-    // Konfigurasi: backend CPU saja (stabil); age via face.gear
+    // Gunakan backend CPU (paling stabil di semua HP), tanpa warmup
     const cfg: any = {
       debug: false,
       modelBasePath: MODEL_BASE,
@@ -76,16 +76,12 @@ export default function CameraAge() {
       },
     }
 
-    // Coba 2 detektor (front/back). Kita **tidak** melakukan warmup (biar tidak macet).
     for (const det of DETECTOR_FILES) {
       try {
         cfg.face.detector.modelPath = det
         setStatus(`Memuat model lokal (CPU)… (${det})`)
         const human = new Human(cfg)
-        await human.load()        // muat model
-        // Paksa backend cpu & siap
-        await human.tf.setBackend("cpu")
-        await human.tf.ready()
+        await human.load() // muat semua model
         setStatus("Model siap (CPU)")
         return human
       } catch (e) {
@@ -95,9 +91,8 @@ export default function CameraAge() {
     throw new Error("Model lokal tidak ditemukan / gagal dimuat")
   }
 
-  // --- Lifecycle -------------------------------------------------------------
+  // -------- Lifecycle
   useEffect(() => {
-    // pre-list kamera
     (async () => {
       try {
         const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
@@ -129,7 +124,7 @@ export default function CameraAge() {
         if (!runningRef.current) return
         rafRef.current = requestAnimationFrame(loop)
         const now = performance.now()
-        if (now - lastDetect.current < 100) return // ~10 FPS di CPU
+        if (now - lastDetect.current < 100) return // ~10 FPS (CPU)
         lastDetect.current = now
         detect()
       }
@@ -155,7 +150,8 @@ export default function CameraAge() {
         const [bx, by, bw, bh] = f.box || [0,0,0,0]
         if (bw>0 && bh>0) { ctx.strokeStyle = "#00d4aa"; ctx.lineWidth = 3; ctx.strokeRect(bx,by,bw,bh) }
         const a = (f.age != null) ? Math.round(f.age) : null
-        const c = f.score ? (f.score * 100).toFixed(1) + "%" : "—"
+        const score = (f.faceScore ?? f.boxScore ?? f.score ?? 0) as number
+        const c = score ? (score * 100).toFixed(1) + "%" : "—"
         setAge(a ? `${a} tahun` : "—"); setConf(c)
         if (a) {
           ctx.fillStyle = "rgba(0,0,0,.6)"
