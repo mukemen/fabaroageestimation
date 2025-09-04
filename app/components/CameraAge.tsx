@@ -1,16 +1,9 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 
-const MODEL_BASE = "/models" // model Human disalin ke public/models via postinstall
+// Model Human ada di public/models (disalin saat postinstall)
+const MODEL_BASE = "/models"
 const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
-
-// util kecil: timeout; untuk warmup kita tidak mem-fail total
-function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("timeout")), ms)
-    p.then(v => { clearTimeout(t); resolve(v) }).catch(e => { clearTimeout(t); reject(e) })
-  })
-}
 
 export default function CameraAge() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -29,20 +22,7 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
-  // pre-list kamera
-  useEffect(() => {
-    (async () => {
-      try {
-        const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-        s.getTracks().forEach(t => t.stop())
-        const devices = await navigator.mediaDevices.enumerateDevices()
-        setCameras(devices.filter(d => d.kind === "videoinput"))
-      } catch {}
-    })()
-    return () => stopCam()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
+  // --- Helpers ---------------------------------------------------------------
   async function ensureCamera() {
     if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
     const constraints: MediaStreamConstraints = {
@@ -70,16 +50,17 @@ export default function CameraAge() {
     } catch { return false }
   }
 
-  async function loadHuman() {
-    // ✅ impor default dari paket (bukan dari /dist)
-    const mod = await import("@vladmandic/human")
-    const Human = (mod as any).default || (mod as any).Human
+  async function loadHumanCPU() {
+    // Import ESM dari package (Next akan bundle untuk client)
+    const m = await import("@vladmandic/human")
+    const Human = (m as any).default || (m as any).Human
 
-    // config awal (pakai WebGL dahulu)
-    const baseConfig: any = {
+    // Konfigurasi: backend CPU saja (stabil); age via face.gear
+    const cfg: any = {
+      debug: false,
       modelBasePath: MODEL_BASE,
       cacheSensitivity: 0,
-      backend: "webgl",
+      backend: "cpu",
       filter: { enabled: true, equalization: true },
       face: {
         enabled: true,
@@ -88,58 +69,58 @@ export default function CameraAge() {
         iris: { enabled: false },
         attention: { enabled: false },
         description: { enabled: false },
-        gear: { enabled: true, modelPath: "gear/gear.json" }, // age/gender
+        gear: { enabled: true, modelPath: "gear/gear.json" }, // umur/gender
         emotion: { enabled: false },
         antispoof: { enabled: false },
         liveness: { enabled: false },
       },
     }
 
-    // coba dua file detektor (front/back)
+    // Coba 2 detektor (front/back). Kita **tidak** melakukan warmup (biar tidak macet).
     for (const det of DETECTOR_FILES) {
       try {
-        setStatus(`Memuat model lokal… (${det})`)
-        baseConfig.face.detector.modelPath = det
-        const human = new Human(baseConfig)
-
-        await withTimeout(human.load(), 12000) // load model
-
-        // Warmup jangan bikin gagal total: coba WebGL → kalau timeout, fallback CPU
-        try {
-          await withTimeout(human.warmup(), 5000)
-          setStatus("Model siap (WebGL)")
-          return human
-        } catch {
-          try {
-            await human.tf.setBackend("cpu")
-            await human.tf.ready()
-            await withTimeout(human.warmup(), 4000).catch(()=>{}) // abaikan jika lama
-            setStatus("Model siap (CPU fallback)")
-            return human
-          } catch (e) {
-            console.warn("Fallback CPU gagal:", e)
-            // lanjut mencoba detektor berikutnya
-          }
-        }
+        cfg.face.detector.modelPath = det
+        setStatus(`Memuat model lokal (CPU)… (${det})`)
+        const human = new Human(cfg)
+        await human.load()        // muat model
+        // Paksa backend cpu & siap
+        await human.tf.setBackend("cpu")
+        await human.tf.ready()
+        setStatus("Model siap (CPU)")
+        return human
       } catch (e) {
-        console.warn("Gagal load model:", det, e)
+        console.warn("Gagal load detektor:", det, e)
       }
     }
-    throw new Error("Model lokal tidak dapat dimuat (cek /models)")
+    throw new Error("Model lokal tidak ditemukan / gagal dimuat")
   }
+
+  // --- Lifecycle -------------------------------------------------------------
+  useEffect(() => {
+    // pre-list kamera
+    (async () => {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        s.getTracks().forEach(t => t.stop())
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        setCameras(devices.filter(d => d.kind === "videoinput"))
+      } catch {}
+    })()
+    return () => stopCam()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function startCam() {
     try {
-      setStatus("Menyalakan kamera…")
-      await ensureCamera()
+      setStatus("Menyalakan kamera…"); await ensureCamera()
 
       if (!(await selfTestModels())) {
-        setStatus("Model TIDAK ditemukan di /models — pastikan folder public/models ikut terdeploy")
+        setStatus("Model TIDAK ada di /models — pastikan folder public/models ikut terdeploy")
         return
       }
 
       setStatus("Kamera aktif — memuat model…")
-      const human = await loadHuman()
+      const human = await loadHumanCPU()
       humanRef.current = human
 
       runningRef.current = true
@@ -148,7 +129,7 @@ export default function CameraAge() {
         if (!runningRef.current) return
         rafRef.current = requestAnimationFrame(loop)
         const now = performance.now()
-        if (now - lastDetect.current < 66) return // ~15 FPS
+        if (now - lastDetect.current < 100) return // ~10 FPS di CPU
         lastDetect.current = now
         detect()
       }
