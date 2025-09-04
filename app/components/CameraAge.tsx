@@ -24,6 +24,8 @@ export default function CameraAge() {
   const runningRef = useRef<boolean>(false)
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
+  const fpsTimerRef = useRef<number>(0)
+  const fpsCountRef = useRef<number>(0)
 
   // ---------- helpers ----------
   async function ensureCamera() {
@@ -34,7 +36,11 @@ export default function CameraAge() {
     const constraints: MediaStreamConstraints = {
       video: deviceId
         ? { deviceId: { exact: deviceId } }
-        : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        : { 
+            facingMode: { ideal: "user" }, // Perbaikan untuk iOS
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 } 
+          },
       audio: false,
     }
     const stream = await navigator.mediaDevices.getUserMedia(constraints)
@@ -53,39 +59,49 @@ export default function CameraAge() {
 
   async function selfTestModels() {
     try {
-      const urls = ["/models/blazeface-front.json", "/models/faceres.json", "/models/gear.json"]
-      const oks = await Promise.all(urls.map(u => fetch(u, { cache: "no-store" }).then(r => r.ok)))
-      if (!oks.every(Boolean)) throw new Error("model missing")
-      return true
-    } catch {
-      return false
+      // Cek minimal 1 detektor tersedia (front OR back)
+      const detectorChecks = await Promise.all(
+        DETECTOR_FILES.map(file => 
+          fetch(`${MODEL_BASE}/${file}`, { cache: "force-cache" }).then(r => r.ok)
+        )
+      );
+      if (!detectorChecks.some(Boolean)) throw new Error("No detector model");
+
+      // Cek model wajib lainnya
+      const requiredModels = ["faceres.json", "gear.json"];
+      const modelChecks = await Promise.all(
+        requiredModels.map(file => 
+          fetch(`${MODEL_BASE}/${file}`, { cache: "force-cache" }).then(r => r.ok)
+        )
+      );
+      if (!modelChecks.every(Boolean)) throw new Error("Required models missing");
+      
+      return true;
+    } catch (e) {
+      console.error("Model self-test failed:", e);
+      return false;
     }
   }
 
   // dynamic import supaya tidak kena SSR/bundling aneh
   async function loadHumanCPU() {
-    // ⛔ JANGAN pakai '/dist/human.esm.js' lagi
-    const mod: any = await import("@vladmandic/human") // <- aman
+    const mod: any = await import("@vladmandic/human")
     const Human = mod.default || mod.Human
 
     const baseCfg: any = {
       debug: false,
       modelBasePath: MODEL_BASE,
       cacheSensitivity: 0,
-      backend: "cpu", // stabil di semua device
+      backend: "cpu",
       filter: { enabled: true, equalization: true },
       face: {
         enabled: true,
         detector: {
           rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0,
-          modelPath: DETECTOR_FILES[0],
+          // Path akan diisi di loop
         },
-        // WAJIB supaya f.age terisi
-        description: { enabled: true, modelPath: "faceres.json" },
-        // Tambahan prediktor (juga hasilkan age)
-        gear: { enabled: true, modelPath: "gear.json" },
-
-        // dimatikan agar ringan
+        description: { enabled: true },
+        gear: { enabled: true },
         mesh: { enabled: false },
         iris: { enabled: false },
         attention: { enabled: false },
@@ -98,10 +114,34 @@ export default function CameraAge() {
     for (const det of DETECTOR_FILES) {
       try {
         setStatus(`Memuat model lokal (CPU)… (${det})`)
-        baseCfg.face.detector.modelPath = det
-        const human = new Human(baseCfg)
-        await human.load() // muat semua model
-        setStatus("Model siap (CPU)")
+        
+        const human = new Human({
+          ...baseCfg,
+          face: {
+            ...baseCfg.face,
+            detector: { 
+              ...baseCfg.face.detector, 
+              modelPath: `${MODEL_BASE}/${det}` 
+            },
+            description: {
+              ...baseCfg.face.description,
+              modelPath: `${MODEL_BASE}/faceres.json`
+            },
+            gear: {
+              ...baseCfg.face.gear,
+              modelPath: `${MODEL_BASE}/gear.json`
+            }
+          }
+        })
+        
+        await human.load()
+        
+        // Verifikasi model benar-benar termuat
+        if (!human.modelLoaded("face")) {
+          throw new Error(`Detektor gagal dimuat: ${det}`);
+        }
+        
+        setStatus(`Model siap: ${det.split('-')[1].replace('.json', '')}`)
         return human
       } catch (e) {
         console.warn("Gagal load detektor:", det, e)
@@ -118,9 +158,28 @@ export default function CameraAge() {
         s.getTracks().forEach(t => t.stop())
         const devices = await navigator.mediaDevices.enumerateDevices()
         setCameras(devices.filter(d => d.kind === "videoinput"))
-      } catch {}
+      } catch (err) {
+        console.error("Gagal enumerasi kamera:", err)
+        setStatus("Gagal mengakses kamera. Pastikan izin diizinkan.")
+      }
     })()
-    return () => stopCam()
+
+    // FPS counter
+    fpsTimerRef.current = performance.now()
+    const fpsInterval = setInterval(() => {
+      const now = performance.now()
+      const elapsed = now - fpsTimerRef.current
+      if (elapsed > 0) {
+        setFps(Math.round(fpsCountRef.current * 1000 / elapsed))
+        fpsCountRef.current = 0
+        fpsTimerRef.current = now
+      }
+    }, 1000)
+
+    return () => {
+      stopCam()
+      if (fpsInterval) clearInterval(fpsInterval)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -131,6 +190,7 @@ export default function CameraAge() {
 
       if (!(await selfTestModels())) {
         setStatus("Model TIDAK lengkap di /models (butuh: blazeface-front.json, faceres.json, gear.json)")
+        stopCam()
         return
       }
 
@@ -146,11 +206,13 @@ export default function CameraAge() {
         const now = performance.now()
         if (now - lastDetect.current < 100) return // ~10 FPS (CPU)
         lastDetect.current = now
+        fpsCountRef.current++
         detect()
       }
       rafRef.current = requestAnimationFrame(loop)
       setStatus("Siap. Arahkan wajah ke kamera.")
     } catch (err: any) {
+      stopCam()
       setStatus("Gagal: " + (err?.message || String(err)))
     }
   }
@@ -190,9 +252,6 @@ export default function CameraAge() {
       }
     } catch (e:any) {
       setStatus("Error deteksi: " + (e?.message || String(e)))
-    } finally {
-      const dt = performance.now() - t0
-      setFps(Math.max(1, Math.round(1000/dt)))
     }
   }
 
@@ -201,43 +260,160 @@ export default function CameraAge() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     const v = videoRef.current
     if (v?.srcObject) (v.srcObject as MediaStream).getTracks().forEach(t => t.stop())
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
+    if (streamRef.current) { 
+      streamRef.current.getTracks().forEach(t => t.stop()) 
+      streamRef.current = null 
+    }
     setStatus("Berhenti")
   }
 
   async function onChangeCamera(id: string) {
     setDeviceId(id || undefined)
-    if (runningRef.current) { stopCam(); await startCam() }
+    if (runningRef.current) { 
+      stopCam()
+      await startCam() 
+    }
   }
 
   return (
-    <main className="container">
-      <header className="header" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+    <main className="container" style={{ 
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif',
+      maxWidth: "800px",
+      margin: "0 auto",
+      padding: "20px"
+    }}>
+      <header className="header" style={{ 
+        display: "flex", 
+        alignItems: "center", 
+        gap: "12px",
+        marginBottom: "20px"
+      }}>
         <img src="/logo/logo-horizontal.png" alt="Fabaro Age Estimation" height={40} />
-        <span className="badge">PWA</span>
+        <span style={{ 
+          background: "#2563eb", 
+          color: "white", 
+          padding: "4px 10px",
+          borderRadius: "12px",
+          fontSize: "14px",
+          fontWeight: "bold"
+        }}>PWA</span>
       </header>
 
-      <div className="row">
-        <button className="btn" onClick={startCam}>Izinkan Kamera</button>
-        <button className="btn" onClick={stopCam}>Hentikan</button>
-        <select className="btn" value={deviceId} onChange={(e) => onChangeCamera(e.currentTarget.value)}>
+      <div style={{ 
+        display: "flex", 
+        gap: "10px", 
+        marginBottom: "20px",
+        flexWrap: "wrap"
+      }}>
+        <button 
+          style={{
+            background: "#2563eb",
+            color: "white",
+            border: "none",
+            padding: "10px 20px",
+            borderRadius: "6px",
+            cursor: "pointer",
+            fontWeight: "bold"
+          }}
+          onClick={startCam}
+        >Izinkan Kamera</button>
+        
+        <button 
+          style={{
+            background: "#dc2626",
+            color: "white",
+            border: "none",
+            padding: "10px 20px",
+            borderRadius: "6px",
+            cursor: "pointer",
+            fontWeight: "bold"
+          }}
+          onClick={stopCam}
+        >Hentikan</button>
+        
+        <select 
+          style={{
+            padding: "10px 15px",
+            borderRadius: "6px",
+            border: "1px solid #e2e8f0",
+            background: "white"
+          }}
+          value={deviceId}
+          onChange={(e) => onChangeCamera(e.currentTarget.value)}
+        >
           <option value="">Pilih kamera…</option>
           {cameras.map((c, i) => <option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i + 1}`}</option>)}
         </select>
-        <span className="pill">Status: {status}</span>
+        
+        <span style={{
+          background: "#f1f5f9",
+          padding: "8px 12px",
+          borderRadius: "999px",
+          fontSize: "14px"
+        }}>Status: {status}</span>
       </div>
 
-      <div className="wrap">
-        <video ref={videoRef} playsInline muted />
-        <canvas ref={canvasRef} />
-        <div className="hud">
-          <div><b>Perkiraan Umur:</b> <span>{age}</span></div>
-          <div><b>Confidence:</b> <span>{conf}</span></div>
-          <div className="pill">FPS: {fps || "—"}</div>
+      <div style={{ 
+        position: "relative",
+        width: "100%",
+        aspectRatio: "16 / 9",
+        backgroundColor: "#000",
+        borderRadius: "8px",
+        overflow: "hidden",
+        marginBottom: "20px"
+      }}>
+        <video 
+          ref={videoRef} 
+          playsInline 
+          muted 
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover"
+          }}
+        />
+        <canvas 
+          ref={canvasRef} 
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: "100%"
+          }}
+        />
+        <div style={{
+          position: "absolute",
+          bottom: "15px",
+          left: "15px",
+          background: "rgba(0,0,0,0.5)",
+          color: "white",
+          padding: "10px",
+          borderRadius: "8px",
+          width: "calc(100% - 30px)"
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
+            <b>Perkiraan Umur:</b> <span>{age}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px" }}>
+            <b>Confidence:</b> <span>{conf}</span>
+          </div>
+          <div style={{
+            background: "rgba(255,255,255,0.2)",
+            padding: "3px 8px",
+            borderRadius: "6px",
+            display: "inline-block",
+            fontSize: "12px"
+          }}>FPS: {fps || "—"}</div>
         </div>
       </div>
 
-      <p className="footer">
+      <p style={{ 
+        color: "#64748b",
+        fontSize: "14px",
+        fontStyle: "italic",
+        textAlign: "center"
+      }}>
         100% on-device. Setelah pertama kali online, model disimpan offline oleh Service Worker.
         Gunakan secara etis & minta persetujuan. © FABARO GROUP
       </p>
