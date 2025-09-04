@@ -1,14 +1,13 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 
-const HUMAN_VERSION = "3.3.6"
-const MODEL_BASE = "/models" // disalin ke public/models saat install
+const MODEL_BASE = "/models" // model Human disalin ke public/models
 const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
 
-// timeout util biar gak ngegantung
-function withTimeout<T>(p: Promise<T>, ms = 8000, label = "timeout"): Promise<T> {
+// util kecil: timeout, tapi kita tidak mem-fail total untuk warmup
+function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(label)), ms)
+    const t = setTimeout(() => reject(new Error("timeout")), ms)
     p.then(v => { clearTimeout(t); resolve(v) }).catch(e => { clearTimeout(t); reject(e) })
   })
 }
@@ -30,7 +29,7 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
-  // Pre-list kamera
+  // pre-list kamera
   useEffect(() => {
     (async () => {
       try {
@@ -38,7 +37,7 @@ export default function CameraAge() {
         s.getTracks().forEach(t => t.stop())
         const devices = await navigator.mediaDevices.enumerateDevices()
         setCameras(devices.filter(d => d.kind === "videoinput"))
-      } catch { /* ignore */ }
+      } catch {}
     })()
     return () => stopCam()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -47,7 +46,8 @@ export default function CameraAge() {
   async function ensureCamera() {
     if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
     const constraints: MediaStreamConstraints = {
-      video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: deviceId ? { deviceId: { exact: deviceId } } :
+        { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     }
     const stream = await navigator.mediaDevices.getUserMedia(constraints)
@@ -61,46 +61,82 @@ export default function CameraAge() {
     canvas.height = video.videoHeight
   }
 
+  async function selfTestModels() {
+    try {
+      const a = await fetch("/models/gear/gear.json", { cache: "no-store" })
+      const b = await fetch("/models/blazeface-front.json", { cache: "no-store" })
+      if (!a.ok || !b.ok) throw new Error("404")
+      return true
+    } catch { return false }
+  }
+
   async function loadHuman() {
-    // Import ESM langsung dari package (tanpa <script> CDN)
     const { Human } = await import("@vladmandic/human/dist/human.esm.js")
-    let lastErr: any = null
+
+    // config dasar (pakai webgl dulu)
+    const baseConfig: any = {
+      modelBasePath: MODEL_BASE,
+      cacheSensitivity: 0,
+      backend: "webgl",
+      filter: { enabled: true, equalization: true },
+      face: {
+        enabled: true,
+        detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: DETECTOR_FILES[0] },
+        mesh: { enabled: false },
+        iris: { enabled: false },
+        attention: { enabled: false },
+        description: { enabled: false },
+        gear: { enabled: true, modelPath: "gear/gear.json" }, // age/gender
+        emotion: { enabled: false },
+        antispoof: { enabled: false },
+        liveness: { enabled: false },
+      },
+    }
+
+    // coba dua file detektor (front/back)
     for (const det of DETECTOR_FILES) {
       try {
-        setStatus(`Memuat model… (local ${det})`)
-        const human = new Human({
-          version: HUMAN_VERSION,
-          modelBasePath: MODEL_BASE, // served dari domain sendiri
-          cacheSensitivity: 0,
-          backend: "webgl",
-          filter: { enabled: true, equalization: true },
-          face: {
-            enabled: true,
-            detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: det },
-            mesh: { enabled: false },
-            iris: { enabled: false },
-            attention: { enabled: false },
-            description: { enabled: false },
-            gear: { enabled: true, modelPath: "gear/gear.json" }, // umur/gender
-            emotion: { enabled: false },
-            antispoof: { enabled: false },
-            liveness: { enabled: false },
-          },
-        })
-        await withTimeout(human.load(), 10000, "load models timeout")
-        await withTimeout(human.warmup(), 4000, "warmup timeout")
-        return human
+        setStatus(`Memuat model lokal… (${det})`)
+        baseConfig.face.detector.modelPath = det
+        const human = new Human(baseConfig)
+        await withTimeout(human.load(), 12000) // muat model
+
+        // warmup: JANGAN dianggap fatal. Coba webgl → kalau timeout, fallback cpu.
+        try {
+          await withTimeout(human.warmup(), 5000)
+          setStatus("Model siap (WebGL)")
+          return human
+        } catch {
+          // fallback ke CPU agar tetap jalan di device yang GPU-nya bermasalah
+          try {
+            // @ts-ignore
+            await human.tf.setBackend("cpu")
+            await human.tf.ready()
+            await withTimeout(human.warmup(), 4000).catch(()=>{}) // abaikan hasil
+            setStatus("Model siap (CPU fallback)")
+            return human
+          } catch (e) {
+            console.warn("Fallback CPU gagal:", e)
+            // lanjut ke detektor berikutnya
+          }
+        }
       } catch (e) {
-        console.warn("Gagal load detektor:", det, e)
-        lastErr = e
+        console.warn("Gagal load model:", det, e)
       }
     }
-    throw new Error("Gagal memuat model lokal: " + (lastErr?.message || lastErr))
+    throw new Error("Model lokal tidak dapat dimuat (cek /models)")
   }
 
   async function startCam() {
     try {
-      setStatus("Menyalakan kamera…"); await ensureCamera()
+      setStatus("Menyalakan kamera…")
+      await ensureCamera()
+
+      if (!(await selfTestModels())) {
+        setStatus("Model TIDAK ditemukan di /models — push folder public/models ke repo")
+        return
+      }
+
       setStatus("Kamera aktif — memuat model…")
       const human = await loadHuman()
       humanRef.current = human
@@ -111,7 +147,7 @@ export default function CameraAge() {
         if (!runningRef.current) return
         rafRef.current = requestAnimationFrame(loop)
         const now = performance.now()
-        if (now - lastDetect.current < 66) return
+        if (now - lastDetect.current < 66) return // ~15 FPS
         lastDetect.current = now
         detect()
       }
@@ -129,15 +165,23 @@ export default function CameraAge() {
     try {
       const result = await human.detect(video)
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      if (!result?.face?.length) { setAge("—"); setConf("—") }
-      else {
+
+      if (!result?.face?.length) {
+        setAge("—"); setConf("—")
+      } else {
         const f = result.face[0]
         const [bx, by, bw, bh] = f.box || [0,0,0,0]
         if (bw>0 && bh>0) { ctx.strokeStyle = "#00d4aa"; ctx.lineWidth = 3; ctx.strokeRect(bx,by,bw,bh) }
         const a = (f.age != null) ? Math.round(f.age) : null
         const c = f.score ? (f.score * 100).toFixed(1) + "%" : "—"
         setAge(a ? `${a} tahun` : "—"); setConf(c)
-        if (a) { ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(bx, Math.max(0, by-26), 120, 24); ctx.fillStyle = "#fff"; ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto, Arial"; ctx.fillText(`≈ ${a} th`, bx+8, Math.max(14, by-8)) }
+        if (a) {
+          ctx.fillStyle = "rgba(0,0,0,.6)"
+          ctx.fillRect(bx, Math.max(0, by-26), 120, 24)
+          ctx.fillStyle = "#fff"
+          ctx.font = "14px system-ui, -apple-system, Segoe UI, Roboto, Arial"
+          ctx.fillText(`≈ ${a} th`, bx+8, Math.max(14, by-8))
+        }
       }
     } catch (e:any) {
       setStatus("Error deteksi: " + (e?.message || String(e)))
