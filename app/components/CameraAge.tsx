@@ -11,6 +11,14 @@ const MODEL_BASES = [
   `https://unpkg.com/@vladmandic/human@${HUMAN_VERSION}/models`,
 ]
 
+// util: timeout promise
+function withTimeout<T>(p: Promise<T>, ms = 8000, label = "timeout"): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(label)), ms)
+    p.then(v => { clearTimeout(t); resolve(v) }).catch(e => { clearTimeout(t); reject(e) })
+  })
+}
+
 export default function CameraAge() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -28,18 +36,43 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
+  // 1) Minta izin kamera dulu supaya video jalan lebih dulu
   useEffect(() => {
-    const prep = async () => {
+    (async () => {
       try {
-        await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        s.getTracks().forEach(t => t.stop()) // kita hanya butuh izin & list devices
         const devices = await navigator.mediaDevices.enumerateDevices()
         setCameras(devices.filter(d => d.kind === "videoinput"))
-      } catch { /* ignore */ }
-    }
-    prep()
+      } catch {/* abaikan */}
+    })()
     return () => stopCam()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function ensureCamera() {
+    // stop stream lama
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
+    const constraints: MediaStreamConstraints = {
+      video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    }
+    const stream = await navigator.mediaDevices.getUserMedia(constraints)
+    streamRef.current = stream
+    const video = videoRef.current!
+    video.srcObject = stream
+    await new Promise<void>(res => {
+      const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
+      video.addEventListener("loadedmetadata", onMeta)
+    })
+    await video.play()
+    const canvas = canvasRef.current!
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+  }
 
   async function loadHuman() {
     const HumanCtor = window.Human?.Human
@@ -48,30 +81,31 @@ export default function CameraAge() {
     let lastErr: any = null
     for (const base of MODEL_BASES) {
       try {
+        setStatus(`Memuat model… (${new URL(base).host})`)
         const human = new HumanCtor({
-          modelBasePath: base,               // base folder
+          modelBasePath: base,
           cacheSensitivity: 0,
           backend: "webgl",
           filter: { enabled: true, equalization: true },
           face: {
             enabled: true,
-            detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0 },
+            // ⬇️ Penting: set file model eksplisit supaya tidak jatuh ke '/models/'
+            detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: "blazeface.json" },
             mesh: { enabled: false },
             iris: { enabled: false },
             attention: { enabled: false },
-            description: { enabled: false },   // tidak dipakai utk age
-            // ✔ gunakan modul GEAR + path file JSON yang jelas
-            gear: { enabled: true, modelPath: "gear/gear.json" },
+            description: { enabled: false },
+            gear: { enabled: true, modelPath: "gear/gear.json" }, // age/gender
             emotion: { enabled: false },
             antispoof: { enabled: false },
             liveness: { enabled: false },
           },
         })
-        await human.load()
-        await human.warmup()
+        await withTimeout(human.load(), 8000, "load models timeout")
+        await withTimeout(human.warmup(), 4000, "warmup timeout")
         return human
       } catch (e) {
-        console.warn("Gagal load model dari", base, e)
+        console.warn("Gagal load dari", base, e)
         lastErr = e
       }
     }
@@ -80,37 +114,13 @@ export default function CameraAge() {
 
   async function startCam() {
     try {
-      setStatus("Memuat model…")
+      setStatus("Menyalakan kamera…")
+      await ensureCamera()
+      setStatus("Kamera aktif — memuat model…")
+
       const human = await loadHuman()
       humanRef.current = human
 
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop())
-        streamRef.current = null
-      }
-
-      const constraints: MediaStreamConstraints = {
-        video: deviceId ? { deviceId: { exact: deviceId } } : {
-          facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }
-        },
-        audio: false,
-      }
-      const stream = await navigator.mediaDevices.getUserMedia(constraints)
-      streamRef.current = stream
-
-      const video = videoRef.current!
-      video.srcObject = stream
-      await new Promise<void>(res => {
-        const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
-        video.addEventListener("loadedmetadata", onMeta)
-      })
-      await video.play()
-
-      const canvas = canvasRef.current!
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-
-      setStatus("Kamera aktif")
       runningRef.current = true
       lastDetect.current = performance.now()
 
@@ -123,9 +133,10 @@ export default function CameraAge() {
         detect()
       }
       rafRef.current = requestAnimationFrame(loop)
+      setStatus("Siap. Arahkan wajah ke kamera.")
 
     } catch (err: any) {
-      setStatus("Gagal: " + (err?.message || String(err)))
+      setStatus("Gagal: " + (err?.message || String(err)) + ". Coba refresh & izinkan kamera lagi.")
     }
   }
 
