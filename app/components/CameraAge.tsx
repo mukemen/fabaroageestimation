@@ -1,11 +1,10 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
 
-// Model Human disajikan dari domain sendiri (public/models)
-// Pastikan di deploy ada file:
-// - /models/blazeface-front.json (atau blazeface-back.json)
-// - /models/faceres.json
-// - /models/gear.json
+// Pastikan file berikut ADA di deploy (public/models):
+// - blazeface-front.json  (atau blazeface-back.json)
+// - faceres.json
+// - gear.json
 const MODEL_BASE = "/models"
 const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
 
@@ -26,12 +25,8 @@ export default function CameraAge() {
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
-  // ---------- Helpers ----------
   async function ensureCamera() {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop())
-      streamRef.current = null
-    }
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
     const constraints: MediaStreamConstraints = {
       video: deviceId ? { deviceId: { exact: deviceId } } :
         { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -41,10 +36,7 @@ export default function CameraAge() {
     streamRef.current = stream
     const video = videoRef.current!
     video.srcObject = stream
-    await new Promise<void>(res => {
-      const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
-      video.addEventListener("loadedmetadata", onMeta)
-    })
+    await new Promise<void>(res => { const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }; video.addEventListener("loadedmetadata", onMeta) })
     await video.play()
     const canvas = canvasRef.current!
     canvas.width = video.videoWidth
@@ -61,11 +53,11 @@ export default function CameraAge() {
   }
 
   async function loadHumanCPU() {
-    // import paket (tanpa tipe, treat as any)
+    // ✅ impor BENAR: dari paket, bukan /dist
     const mod: any = await import("@vladmandic/human")
     const Human = mod.default || mod.Human
 
-    // Konfigurasi stabil: CPU-only (tanpa warmup), age via description + gear
+    // Konfigurasi stabil (CPU-only); age via description + gear
     const cfg: any = {
       debug: false,
       modelBasePath: MODEL_BASE,
@@ -76,27 +68,22 @@ export default function CameraAge() {
         enabled: true,
         detector: {
           rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0,
-          modelPath: DETECTOR_FILES[0], // coba front dahulu
+          modelPath: DETECTOR_FILES[0],
         },
-        // WAJIB untuk memunculkan age dari FaceRes
-        description: { enabled: true, modelPath: "faceres.json" },
-        // Tambahan prediktor (juga punya age)
-        gear: { enabled: true, modelPath: "gear.json" },
-
-        // Lainnya dimatikan untuk ringan
+        description: { enabled: true, modelPath: "faceres.json" }, // ← wajib utk age
+        gear: { enabled: true, modelPath: "gear.json" },           // ← tambahan prediktor age
         mesh: { enabled: false }, iris: { enabled: false },
         attention: { enabled: false }, emotion: { enabled: false },
         antispoof: { enabled: false }, liveness: { enabled: false },
       },
     }
 
-    // Coba 2 detektor (front/back)
     for (const det of DETECTOR_FILES) {
       try {
         cfg.face.detector.modelPath = det
         setStatus(`Memuat model lokal (CPU)… (${det})`)
         const human = new Human(cfg)
-        await human.load() // muat semua model
+        await human.load() // muat model
         setStatus("Model siap (CPU)")
         return human
       } catch (e) {
@@ -106,9 +93,7 @@ export default function CameraAge() {
     throw new Error("Model lokal tidak lengkap / gagal dimuat")
   }
 
-  // ---------- Lifecycle ----------
   useEffect(() => {
-    // pre-list kamera (agar dropdown ada pilihan)
     (async () => {
       try {
         const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
@@ -123,8 +108,7 @@ export default function CameraAge() {
 
   async function startCam() {
     try {
-      setStatus("Menyalakan kamera…")
-      await ensureCamera()
+      setStatus("Menyalakan kamera…"); await ensureCamera()
 
       if (!(await selfTestModels())) {
         setStatus("Model TIDAK lengkap di /models (butuh: blazeface-front.json, faceres.json, gear.json)")
@@ -154,11 +138,8 @@ export default function CameraAge() {
 
   async function detect() {
     const human = humanRef.current
-    const video = videoRef.current!
-    const canvas = canvasRef.current!
-    const ctx = canvas.getContext("2d")!
+    const video = videoRef.current!, canvas = canvasRef.current!, ctx = canvas.getContext("2d")!
     const t0 = performance.now()
-
     try {
       const result = await human.detect(video)
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
@@ -170,10 +151,7 @@ export default function CameraAge() {
         const [bx, by, bw, bh] = f.box || [0,0,0,0]
         if (bw>0 && bh>0) { ctx.strokeStyle = "#00d4aa"; ctx.lineWidth = 3; ctx.strokeRect(bx,by,bw,bh) }
 
-        // Age dari FaceRes/GEAR → f.age
         const a = (f.age != null) ? Math.round(f.age) : null
-
-        // Confidence: gunakan score yang tersedia
         const score = (f.faceScore ?? f.boxScore ?? f.score ?? 0) as number
         const c = score ? (score * 100).toFixed(1) + "%" : "—"
 
