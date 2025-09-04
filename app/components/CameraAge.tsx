@@ -1,37 +1,50 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
-import Human from "@vladmandic/human" // ✅ impor dari paket utama
 
-// Model di public/models: blazeface-front.json, faceres.json, gear.json
+// Pastikan file berikut ADA di public/models:
+//  - blazeface-front.json   (atau blazeface-back.json)
+//  - faceres.json           (FaceRes → age)
+//  - gear.json              (GEAR → age/gender)
 const MODEL_BASE = "/models"
 const DETECTOR_FILES = ["blazeface-front.json", "blazeface-back.json"]
 
 export default function CameraAge() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+
   const [status, setStatus] = useState("Idle")
   const [age, setAge] = useState<string>("—")
   const [conf, setConf] = useState<string>("—")
   const [fps, setFps] = useState<number>(0)
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([])
   const [deviceId, setDeviceId] = useState<string | undefined>(undefined)
+
   const humanRef = useRef<any>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const runningRef = useRef<boolean>(false)
   const rafRef = useRef<number | null>(null)
   const lastDetect = useRef<number>(0)
 
+  // ---------- helpers ----------
   async function ensureCamera() {
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+    }
     const constraints: MediaStreamConstraints = {
-      video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      video: deviceId
+        ? { deviceId: { exact: deviceId } }
+        : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     }
     const stream = await navigator.mediaDevices.getUserMedia(constraints)
     streamRef.current = stream
     const video = videoRef.current!
     video.srcObject = stream
-    await new Promise<void>(res => { const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }; video.addEventListener("loadedmetadata", onMeta) })
+    await new Promise<void>(res => {
+      const onMeta = () => { res(); video.removeEventListener("loadedmetadata", onMeta) }
+      video.addEventListener("loadedmetadata", onMeta)
+    })
     await video.play()
     const canvas = canvasRef.current!
     canvas.width = video.videoWidth
@@ -44,11 +57,18 @@ export default function CameraAge() {
       const oks = await Promise.all(urls.map(u => fetch(u, { cache: "no-store" }).then(r => r.ok)))
       if (!oks.every(Boolean)) throw new Error("model missing")
       return true
-    } catch { return false }
+    } catch {
+      return false
+    }
   }
 
+  // dynamic import supaya tidak kena SSR/bundling aneh
   async function loadHumanCPU() {
-    const cfg: any = {
+    // ⛔ JANGAN pakai '/dist/human.esm.js' lagi
+    const mod: any = await import("@vladmandic/human") // <- aman
+    const Human = mod.default || mod.Human
+
+    const baseCfg: any = {
       debug: false,
       modelBasePath: MODEL_BASE,
       cacheSensitivity: 0,
@@ -56,20 +76,31 @@ export default function CameraAge() {
       filter: { enabled: true, equalization: true },
       face: {
         enabled: true,
-        detector: { rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0, modelPath: DETECTOR_FILES[0] },
-        description: { enabled: true, modelPath: "faceres.json" }, // ← memunculkan f.age
-        gear: { enabled: true, modelPath: "gear.json" },           // ← tambahan age predictor
-        mesh: { enabled: false }, iris: { enabled: false },
-        attention: { enabled: false }, emotion: { enabled: false },
-        antispoof: { enabled: false }, liveness: { enabled: false },
+        detector: {
+          rotation: true, maxDetected: 1, minConfidence: 0.2, skipFrames: 0,
+          modelPath: DETECTOR_FILES[0],
+        },
+        // WAJIB supaya f.age terisi
+        description: { enabled: true, modelPath: "faceres.json" },
+        // Tambahan prediktor (juga hasilkan age)
+        gear: { enabled: true, modelPath: "gear.json" },
+
+        // dimatikan agar ringan
+        mesh: { enabled: false },
+        iris: { enabled: false },
+        attention: { enabled: false },
+        emotion: { enabled: false },
+        antispoof: { enabled: false },
+        liveness: { enabled: false },
       },
     }
+
     for (const det of DETECTOR_FILES) {
       try {
-        cfg.face.detector.modelPath = det
         setStatus(`Memuat model lokal (CPU)… (${det})`)
-        const human = new (Human as any)(cfg)
-        await human.load()
+        baseCfg.face.detector.modelPath = det
+        const human = new Human(baseCfg)
+        await human.load() // muat semua model
         setStatus("Model siap (CPU)")
         return human
       } catch (e) {
@@ -79,6 +110,7 @@ export default function CameraAge() {
     throw new Error("Model lokal tidak lengkap / gagal dimuat")
   }
 
+  // ---------- lifecycle ----------
   useEffect(() => {
     (async () => {
       try {
@@ -94,11 +126,18 @@ export default function CameraAge() {
 
   async function startCam() {
     try {
-      setStatus("Menyalakan kamera…"); await ensureCamera()
-      if (!(await selfTestModels())) { setStatus("Model TIDAK lengkap di /models (butuh: blazeface-front.json, faceres.json, gear.json)"); return }
+      setStatus("Menyalakan kamera…")
+      await ensureCamera()
+
+      if (!(await selfTestModels())) {
+        setStatus("Model TIDAK lengkap di /models (butuh: blazeface-front.json, faceres.json, gear.json)")
+        return
+      }
+
       setStatus("Kamera aktif — memuat model…")
       const human = await loadHumanCPU()
       humanRef.current = human
+
       runningRef.current = true
       lastDetect.current = performance.now()
       const loop = () => {
@@ -111,25 +150,36 @@ export default function CameraAge() {
       }
       rafRef.current = requestAnimationFrame(loop)
       setStatus("Siap. Arahkan wajah ke kamera.")
-    } catch (err: any) { setStatus("Gagal: " + (err?.message || String(err))) }
+    } catch (err: any) {
+      setStatus("Gagal: " + (err?.message || String(err)))
+    }
   }
 
   async function detect() {
     const human = humanRef.current
-    const video = videoRef.current!, canvas = canvasRef.current!, ctx = canvas.getContext("2d")!
+    const video = videoRef.current!
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext("2d")!
     const t0 = performance.now()
+
     try {
       const result = await human.detect(video)
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      if (!result?.face?.length) { setAge("—"); setConf("—") }
-      else {
+
+      if (!result?.face?.length) {
+        setAge("—"); setConf("—")
+      } else {
         const f = result.face[0]
         const [bx, by, bw, bh] = f.box || [0,0,0,0]
         if (bw>0 && bh>0) { ctx.strokeStyle = "#00d4aa"; ctx.lineWidth = 3; ctx.strokeRect(bx,by,bw,bh) }
+
         const a = (f.age != null) ? Math.round(f.age) : null
         const score = (f.faceScore ?? f.boxScore ?? f.score ?? 0) as number
         const c = score ? (score * 100).toFixed(1) + "%" : "—"
-        setAge(a ? `${a} tahun` : "—"); setConf(c)
+
+        setAge(a ? `${a} tahun` : "—")
+        setConf(c)
+
         if (a) {
           ctx.fillStyle = "rgba(0,0,0,.6)"
           ctx.fillRect(bx, Math.max(0, by-26), 120, 24)
@@ -138,8 +188,9 @@ export default function CameraAge() {
           ctx.fillText(`≈ ${a} th`, bx+8, Math.max(14, by-8))
         }
       }
-    } catch (e:any) { setStatus("Error deteksi: " + (e?.message || String(e))) }
-    finally {
+    } catch (e:any) {
+      setStatus("Error deteksi: " + (e?.message || String(e)))
+    } finally {
       const dt = performance.now() - t0
       setFps(Math.max(1, Math.round(1000/dt)))
     }
@@ -165,15 +216,17 @@ export default function CameraAge() {
         <img src="/logo/logo-horizontal.png" alt="Fabaro Age Estimation" height={40} />
         <span className="badge">PWA</span>
       </header>
+
       <div className="row">
         <button className="btn" onClick={startCam}>Izinkan Kamera</button>
         <button className="btn" onClick={stopCam}>Hentikan</button>
         <select className="btn" value={deviceId} onChange={(e) => onChangeCamera(e.currentTarget.value)}>
           <option value="">Pilih kamera…</option>
-          {cameras.map((c,i)=> <option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i+1}`}</option>)}
+          {cameras.map((c, i) => <option key={c.deviceId} value={c.deviceId}>{c.label || `Kamera ${i + 1}`}</option>)}
         </select>
         <span className="pill">Status: {status}</span>
       </div>
+
       <div className="wrap">
         <video ref={videoRef} playsInline muted />
         <canvas ref={canvasRef} />
@@ -183,6 +236,7 @@ export default function CameraAge() {
           <div className="pill">FPS: {fps || "—"}</div>
         </div>
       </div>
+
       <p className="footer">
         100% on-device. Setelah pertama kali online, model disimpan offline oleh Service Worker.
         Gunakan secara etis & minta persetujuan. © FABARO GROUP
